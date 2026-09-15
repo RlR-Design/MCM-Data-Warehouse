@@ -90,7 +90,7 @@ WHERE raw_url IS NOT NULL
 =============================================================================
 */
 
--- DIMENSION: Shop (Updated IDs to INT64 based on ERD Diagram Page 4)
+-- DIMENSION: Shop (Updated IDs to INT64)
 CREATE OR REPLACE TABLE statement_competitor_data_warehouse.gold_dim_shop (
     shop_id INT64 NOT NULL,
     shop_name STRING,
