@@ -1,0 +1,42 @@
+/*
+-- =============================================================================
+-- BRONZE LAYER BULK INGESTION
+-- Loads raw product data from CSV (e.g. MCM_All_products.csv) into BigQuery
+-- =============================================================================
+
+Purpose:
+    This is the script that creates brings all the information into the table form the uploaded .csv file that is on
+    Google Cloud Storage.
+ */
+
+-- =============================================================================
+
+*/
+
+LOAD DATA OVERWRITE statement_competitor_data_warehouse.bronze_raw_products (
+    raw_shop_name STRING,
+    raw_latitude STRING,
+    raw_longitude STRING,
+    raw_region STRING,
+    raw_city STRING,
+    raw_category STRING,
+    raw_title STRING,
+    raw_price STRING,
+    raw_description STRING,
+    raw_makers STRING,
+    raw_primary_material STRING,
+    raw_era STRING,
+    raw_condition STRING,
+    raw_dimension STRING,
+    raw_url STRING,
+    raw_available STRING,
+    scrape_timestamp STRING
+)
+FROM FILES (
+    format = 'CSV',
+    uris = ['gs://statement_competitor_data_warehouse/MCM_All_products.csv'],
+    skip_leading_rows = 1,
+    field_delimiter = ',',
+    quote = '"',
+    allow_quoted_newlines = true
+);
