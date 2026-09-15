@@ -25,18 +25,22 @@ CREATE SCHEMA IF NOT EXISTS statement_data_warehouse;
 
 CREATE OR REPLACE TABLE statement_data_warehouse.bronze_raw_products (
     raw_shop_name STRING,
+    raw_latitude STRING,
+    raw_longitude STRING,
+    raw_region STRING,
+    raw_city STRING,
     raw_category STRING,
-    raw_maker STRING,
-    raw_material STRING,
-    raw_url STRING,
     raw_title STRING,
-    raw_description STRING,
     raw_price STRING,
+    raw_description STRING,
+    raw_makers STRING,
+    raw_primary_material STRING,
     raw_era STRING,
     raw_condition STRING,
     raw_dimension STRING,
+    raw_url STRING,
     raw_available STRING,
-    scrape_timestamp STRING
+    scrape_timestamp DATETIME
 );
 
 -- This is the scraper error logging table 
