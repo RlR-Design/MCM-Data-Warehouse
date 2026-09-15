@@ -5,8 +5,8 @@
 -- =============================================================================
 
 Purpose:
-    This is the script that creates brings all the information into the table form the uploaded .csv file that is on
-    Google Cloud Storage.
+    This is the script that brings all the information into the table form the uploaded .csv file that is on
+    Google Cloud Storage, this ensures that the transition to the live pipeline will be seamless.
 */
 
 LOAD DATA OVERWRITE statement_competitor_data_warehouse.bronze_raw_products (
