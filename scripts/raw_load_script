@@ -1,38 +1,56 @@
-/*
 -- =============================================================================
 -- BRONZE LAYER BULK INGESTION
 -- Loads raw product data from CSV (e.g. MCM_All_products.csv) into BigQuery
 -- =============================================================================
+-- BRONZE LAYER BULK INGESTION STORED PROCEDURE
+-- Loads raw product data from Cloud Storage CSV into BigQuery bronze table
+-- =============================================================================
 
-Purpose:
-    This is the script that brings all the information into the table form the uploaded .csv file that is on
-    Google Cloud Storage, this ensures that the transition to the live pipeline will be seamless.
-*/
-
-LOAD DATA OVERWRITE statement_competitor_data_warehouse.bronze_raw_products (
-    raw_shop_name STRING,
-    raw_latitude STRING,
-    raw_longitude STRING,
-    raw_region STRING,
-    raw_city STRING,
-    raw_category STRING,
-    raw_title STRING,
-    raw_price STRING,
-    raw_description STRING,
-    raw_makers STRING,
-    raw_primary_material STRING,
-    raw_era STRING,
-    raw_condition STRING,
-    raw_dimension STRING,
-    raw_url STRING,
-    raw_available STRING,
-    scrape_timestamp STRING
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_bronze_products(
+    IN p_gcs_uri STRING
 )
-FROM FILES (
-    format = 'CSV',
-    uris = ['gs://statement_competitor_data_warehouse/MCM_All_products.csv'],
-    skip_leading_rows = 1,
-    field_delimiter = ',',
-    quote = '"',
-    allow_quoted_newlines = true
-);
+BEGIN
+    LOAD DATA OVERWRITE statement_competitor_data_warehouse.bronze_raw_products (
+        raw_shop_name STRING,
+        raw_latitude STRING,
+        raw_longitude STRING,
+        raw_region STRING,
+        raw_city STRING,
+        raw_category STRING,
+        raw_title STRING,
+        raw_price STRING,
+        raw_description STRING,
+        raw_makers STRING,
+        raw_primary_material STRING,
+        raw_era STRING,
+        raw_condition STRING,
+        raw_dimension STRING,
+        raw_url STRING,
+        raw_available STRING,
+        scrape_timestamp STRING
+    )
+    FROM FILES (
+        format = 'CSV',
+        uris = [COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv')],
+        skip_leading_rows = 1,
+        field_delimiter = ',',
+        quote = '"',
+        allow_quoted_newlines = true
+    );
+END;
+
+-- =============================================================================
+-- INVOCATION & VERIFICATION
+-- =============================================================================
+
+-- Execute using default GCS path (passing NULL defaults to MCM_All_products.csv)
+CALL statement_competitor_data_warehouse.sp_load_bronze_products(NULL);
+
+-- Or execute with a custom file path when new CSV scrape files are uploaded:
+-- CALL statement_competitor_data_warehouse.sp_load_bronze_products('gs://statement_competitor_data_warehouse/new_batch.csv');
+
+-- Verify record counts post ingestion
+SELECT
+    COUNT(*) AS total_raw_records,
+    COUNT(DISTINCT raw_url) AS unique_urls
+FROM statement_competitor_data_warehouse.bronze_raw_products;
