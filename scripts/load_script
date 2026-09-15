@@ -7,10 +7,6 @@
 Purpose:
     This is the script that creates brings all the information into the table form the uploaded .csv file that is on
     Google Cloud Storage.
- */
-
--- =============================================================================
-
 */
 
 LOAD DATA OVERWRITE statement_competitor_data_warehouse.bronze_raw_products (
