@@ -1,15 +1,28 @@
 -- =============================================================================
--- BRONZE LAYER BULK INGESTION
--- Loads raw product data from CSV (e.g. MCM_All_products.csv) into BigQuery
--- =============================================================================
 -- BRONZE LAYER BULK INGESTION STORED PROCEDURE
 -- Loads raw product data from Cloud Storage CSV into BigQuery bronze table
+-- Includes live progress monitoring indicators and timestamped status logs
 -- =============================================================================
 
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_bronze_products (IN p_gcs_uri STRING)
 BEGIN
   DECLARE evaluated_uri STRING;
+  DECLARE start_time TIMESTAMP;
+  
+  SET start_time = CURRENT_TIMESTAMP();
   SET evaluated_uri = COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv');
+
+  -- Visual Progress Indicator 1: Initialization
+  SELECT 
+    '[1/3] INITIALIZING' AS execution_stage,
+    evaluated_uri AS target_gcs_uri,
+    CURRENT_TIMESTAMP() AS stage_timestamp;
+
+  -- Visual Progress Indicator 2: Loading Data
+  SELECT 
+    '[2/3] LOADING DATA' AS execution_stage,
+    FORMAT('Executing OVERWRITE load into bronze_raw_products from %s', evaluated_uri) AS details,
+    CURRENT_TIMESTAMP() AS stage_timestamp;
 
   -- Use EXECUTE IMMEDIATE to evaluate the GCS URI variable dynamically
   EXECUTE IMMEDIATE FORMAT("""
@@ -41,20 +54,25 @@ BEGIN
       allow_quoted_newlines = true
     );
   """, evaluated_uri);
+
+  -- Visual Progress Indicator 3: Success & Execution Duration
+  SELECT 
+    '[3/3] COMPLETED' AS execution_stage,
+    TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND) AS total_duration_seconds,
+    CURRENT_TIMESTAMP() AS stage_timestamp;
+
 END;
 
 -- =============================================================================
 -- INVOCATION & VERIFICATION
 -- =============================================================================
 
--- Execute using default GCS path (passing NULL defaults to MCM_All_products.csv)
+-- Execute stored procedure with default GCS path (triggers visual progress steps in output tab)
 CALL statement_competitor_data_warehouse.sp_load_bronze_products(NULL);
-
--- Or execute with a custom file path when new CSV scrape files are uploaded:
--- CALL statement_competitor_data_warehouse.sp_load_bronze_products('gs://statement_competitor_data_warehouse/new_batch.csv');
 
 -- Verify record counts post ingestion
 SELECT 
     COUNT(*) AS total_raw_records,
-    COUNT(DISTINCT raw_url) AS unique_urls
+    COUNT(DISTINCT raw_url) AS unique_urls,
+    MAX(scrape_timestamp) AS latest_scrape_timestamp
 FROM statement_competitor_data_warehouse.bronze_raw_products;
