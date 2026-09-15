@@ -12,7 +12,7 @@ BEGIN
   SET start_time = CURRENT_TIMESTAMP();
   SET evaluated_uri = COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv');
 
-  -- Visual Progress Indicator 1: Initialization
+  -- Visual Progress Indicator 1: Initialisation
   SELECT 
     '[1/3] INITIALIZING' AS execution_stage,
     evaluated_uri AS target_gcs_uri,
