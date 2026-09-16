@@ -20,6 +20,10 @@ CREATE SCHEMA IF NOT EXISTS statement_data_warehouse;
 /* 
 =============================================================================
 2. BRONZE LAYER (Landing / Raw Data)
+
+WARNING:
+    Running this script will delete all the historical data that exists in the current table. This script should only be
+    used in the event or a system failure or in the event that the system needs to be refreshed. 
 =============================================================================
 */
 
