@@ -26,7 +26,7 @@ CREATE OR REPLACE TABLE statement_competitor_data_warehouse.bronze_raw_products 
     raw_dimension STRING,
     raw_url STRING,
     raw_available STRING,
-    scrape_timestamp DATETIME
+    scrape_timestamp STRING
 );
 
 -- Scraper error logging table (Added from Diagram Page 6)
@@ -35,5 +35,8 @@ CREATE OR REPLACE TABLE statement_competitor_data_warehouse.bronze_raw_error_log
     error_timestamp TIMESTAMP,
     scraper_job_id STRING,
     error_type STRING, -- e.g., 'network', 'DOM_change', 'timeout'
-    error_details STRING
+    error_details STRING,
+    execution_id STRING,
+    batch_id STRING,
+    ingested_at STRING
 );
