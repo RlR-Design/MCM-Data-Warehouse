@@ -9,7 +9,7 @@ WARNING:
 */
 
 
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.bronze_raw_products (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_products (
     raw_shop_name STRING,
     raw_latitude STRING,
     raw_longitude STRING,
@@ -26,17 +26,38 @@ CREATE OR REPLACE TABLE statement_competitor_data_warehouse.bronze_raw_products 
     raw_dimension STRING,
     raw_url STRING,
     raw_available STRING,
-    scrape_timestamp STRING
-);
-
--- Scraper error logging table (Added from Diagram Page 6)
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.bronze_raw_error_logs (
-    log_id STRING,
-    error_timestamp TIMESTAMP,
-    scraper_job_id STRING,
-    error_type STRING, -- e.g., 'network', 'DOM_change', 'timeout'
-    error_details STRING,
+    scrape_timestamp STRING,
     execution_id STRING,
     batch_id STRING,
-    ingested_at STRING
+    ingested_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_error_logs (
+    log_id STRING,
+    execution_id STRING,
+    batch_id STRING,
+    error_timestamp TIMESTAMP,
+    scraper_job_id STRING,
+    error_type STRING,
+    error_details STRING
+);
+
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_quarantine_bad_records (
+    quarantine_id STRING,
+    execution_id STRING,
+    batch_id STRING,
+    error_reason STRING,
+    quarantine_timestamp TIMESTAMP,
+    raw_payload STRING
+);
+
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_validity_log (
+    log_id STRING,
+    execution_id STRING,
+    batch_id STRING,
+    validation_timestamp TIMESTAMP,
+    records_processed INT64,
+    records_passed INT64,
+    records_quarantined INT64,
+    duration_seconds INT64
 );
