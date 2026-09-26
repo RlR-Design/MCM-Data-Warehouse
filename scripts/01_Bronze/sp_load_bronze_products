@@ -63,7 +63,7 @@ BEGIN
       ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMP;
 
     -- Statement 1: Create session temp table for raw stage
-    CREATE OR REPLACE TEMP TABLE stage_bronze_raw_products (
+    CREATE OR REPLACE TEMP TABLE stg_bronze_raw_products (
       raw_shop_name STRING,
       raw_latitude STRING,
       raw_longitude STRING,
@@ -86,7 +86,7 @@ BEGIN
     -- STREAMING_CHUNK: Executing dynamic LOAD DATA into temporary staging table...
     -- Statement 2: Execute dynamic LOAD DATA using triple quotes format specifiers to avoid internal string quote escaping issues
     EXECUTE IMMEDIATE FORMAT("""
-      LOAD DATA OVERWRITE TEMP TABLE stage_bronze_raw_products (
+      LOAD DATA OVERWRITE TEMP TABLE stg_bronze_raw_products (
         raw_shop_name STRING, raw_latitude STRING, raw_longitude STRING, raw_region STRING,
         raw_city STRING, raw_category STRING, raw_title STRING, raw_price STRING,
         raw_description STRING, raw_makers STRING, raw_primary_material STRING,
@@ -148,7 +148,7 @@ BEGIN
       v_execution_id AS execution_id,
       v_batch_id AS batch_id,
       CURRENT_TIMESTAMP() AS ingested_at
-    FROM stage_bronze_raw_products;
+    FROM stg_bronze_raw_products;
 
   -- STREAMING_CHUNK: Catching execution failures and logging error details...
   EXCEPTION WHEN ERROR THEN
@@ -223,3 +223,4 @@ SELECT *
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
 ORDER BY error_timestamp DESC
 LIMIT 10;
+
