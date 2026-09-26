@@ -1,8 +1,9 @@
--- STREAMING_CHUNK: Initializing procedure and declaring variables...
+-- STREAMING_CHUNK: Initialising procedure and declaring variables...
 -- =============================================================================
 -- BRONZE LAYER DATA VALIDATION STORED PROCEDURE
 -- Validates raw data in the statement_competitor_data_warehouse
 -- Identifies records failing mandatory checks (Null URLs, Unparseable Prices),
+-- Identifies empty records and fills them with NULL values    
 -- quarantines them, and logs comprehensive pipeline execution metrics.
 -- =============================================================================
 
@@ -51,7 +52,7 @@ BEGIN
     RAISE USING MESSAGE = 'sp_validate_bronze_products failed: no bronze batch_id found to validate';
   END IF;
 
-  -- STREAMING_CHUNK: Logging stage initialization and preparing idempotency...
+  -- STREAMING_CHUNK: Logging stage initialisation and preparing idempotency...
   -- Log the start of the validation process to the audit table.
   INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
     log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
@@ -66,6 +67,30 @@ BEGIN
     -- Idempotency check: Clear any existing quarantined records for this specific batch
     -- in case this procedure is being re-run after a previous failure.
     DELETE FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
+    WHERE batch_id = v_batch_id;
+
+    -- STREAMING_CHUNK: Standardising empty strings and whitespace to NULL values...
+    -- Update block to convert empty strings ('') and spaces-only strings into SQL NULL values
+    -- across all raw fields for the batch being validated.
+    UPDATE statement_competitor_data_warehouse.bronze_raw_products
+    SET
+      raw_shop_name = NULLIF(TRIM(raw_shop_name), ''),
+      raw_latitude = NULLIF(TRIM(raw_latitude), ''),
+      raw_longitude = NULLIF(TRIM(raw_longitude), ''),
+      raw_region = NULLIF(TRIM(raw_region), ''),
+      raw_city = NULLIF(TRIM(raw_city), ''),
+      raw_category = NULLIF(TRIM(raw_category), ''),
+      raw_title = NULLIF(TRIM(raw_title), ''),
+      raw_price = NULLIF(TRIM(raw_price), ''),
+      raw_description = NULLIF(TRIM(raw_description), ''),
+      raw_makers = NULLIF(TRIM(raw_makers), ''),
+      raw_primary_material = NULLIF(TRIM(raw_primary_material), ''),
+      raw_era = NULLIF(TRIM(raw_era), ''),
+      raw_condition = NULLIF(TRIM(raw_condition), ''),
+      raw_dimension = NULLIF(TRIM(raw_dimension), ''),
+      raw_url = NULLIF(TRIM(raw_url), ''),
+      raw_available = NULLIF(TRIM(raw_available), ''),
+      scrape_timestamp = NULLIF(TRIM(scrape_timestamp), '')
     WHERE batch_id = v_batch_id;
 
     -- STREAMING_CHUNK: Executing mandatory validation rules and quarantining failures...
@@ -162,40 +187,47 @@ END;
 
 -- 1. Ensure the base raw table exists so we can insert mock data
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_products (
-    raw_shop_name STRING, raw_title STRING, raw_price STRING, raw_url STRING,
+    raw_shop_name STRING, raw_latitude STRING, raw_longitude STRING, raw_region STRING,
+    raw_city STRING, raw_category STRING, raw_title STRING, raw_price STRING,
+    raw_description STRING, raw_makers STRING, raw_primary_material STRING,
+    raw_era STRING, raw_condition STRING, raw_dimension STRING, raw_url STRING,
+    raw_available STRING, scrape_timestamp STRING,
     batch_id STRING, ingested_at TIMESTAMP, execution_id STRING
 );
 
 -- 2. Insert test scenarios into the raw table
 INSERT INTO statement_competitor_data_warehouse.bronze_raw_products
-(raw_shop_name, raw_title, raw_price, raw_url, batch_id, ingested_at)
+(raw_shop_name, raw_title, raw_price, raw_url, raw_makers, batch_id, ingested_at)
 VALUES
 -- Scenario A: Valid Record (Should pass)
-('Retro Club', 'Vintage MCM Chair', 'R 2,500.00', 'https://example.com/chair', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
+('Retro Club', 'Vintage MCM Chair', 'R 2,500.00', 'https://example.com/chair', 'Artecasa', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
 
 -- Scenario B: Invalid Record - Null URL (Should fail)
-('Vintage Store', 'Antique Lamp', 'R 1200', NULL, 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
+('Vintage Store', 'Antique Lamp', 'R 1200', NULL, 'Unknown', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
 
 -- Scenario C: Invalid Record - Unparseable Price (Should fail)
-('Cosmic Modern', 'Teak Sideboard', 'Contact for Price', 'https://example.com/sideboard', 'TEST_BATCH_001', CURRENT_TIMESTAMP());
+('Cosmic Modern', 'Teak Sideboard', 'Contact for Price', 'https://example.com/sideboard', '', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
+
+-- Scenario D: Blank/Whitespace Values (Should be standardized to NULL and quarantined if mandatory field is blank)
+('Modern Living', 'Teak Coffee Table', '   ', 'https://example.com/coffeetable', '   ', 'TEST_BATCH_001', CURRENT_TIMESTAMP());
 
 -- STREAMING_CHUNK: Executing the stored procedure and querying results...
 -- 3. Execute the procedure for our test batch
 CALL statement_competitor_data_warehouse.sp_validate_bronze_products('TEST_BATCH_001');
 
--- 4. Review the Validity Log (Should show 3 processed, 1 passed, 2 quarantined)
+-- 4. Review the Validity Log
 SELECT 'VALIDITY LOG' as query_type, *
 FROM statement_competitor_data_warehouse.bronze_validity_log
 WHERE batch_id = 'TEST_BATCH_001'
 ORDER BY validation_timestamp DESC
 LIMIT 1;
 
--- 5. Review the Quarantined Records (Should show 2 records with respective error reasons)
+-- 5. Review the Quarantined Records
 SELECT 'QUARANTINED RECORDS' as query_type, error_reason, raw_payload
 FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
 WHERE batch_id = 'TEST_BATCH_001';
 
--- 6. Review the System Error/Info Logs (Should show START and COMPLETE info logs)
+-- 6. Review the System Error/Info Logs
 SELECT 'SYSTEM LOGS' as query_type, error_type, error_details, error_timestamp
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
 WHERE batch_id = 'TEST_BATCH_001'
