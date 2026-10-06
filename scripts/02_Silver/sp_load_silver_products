@@ -1,0 +1,267 @@
+/*
+=============================================================================
+SILVER LAYER: TRANSFORM & LOAD PROCEDURE
+This script defines the stored procedure to extract, clean, cast, and load data from the
+Bronze raw table into the Silver transformed table using an UPSERT (MERGE) operation,
+incorporating robust sanitization against literal NULLs, NANs, NONEs, and empty values.
+=============================================================================
+
+-- =============================================================================
+-- STORED PROCEDURE: LOAD & TRANSFORM SILVER PRODUCTS
+-- =============================================================================
+*/
+
+/*
+=============================================================================
+SILVER LAYER
+Data Transformation and Load Stored Procedure (sp_load_silver_products)
+=============================================================================
+*/
+
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_silver_products ()
+OPTIONS(strict_mode=false)
+BEGIN
+    DECLARE start_time TIMESTAMP;
+    DECLARE v_execution_id STRING;
+    DECLARE v_batch_id STRING;
+    DECLARE v_error_msg STRING;
+    DECLARE v_error_type STRING;
+
+    SET start_time = CURRENT_TIMESTAMP();
+    SET v_execution_id = GENERATE_UUID();
+    SET v_batch_id = FORMAT_TIMESTAMP('BATCH_SLV_%Y%m%d_%H%M%S', start_time);
+
+    INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_load_silver_products', 'INFO_STAGE_START', 'Starting Silver Layer Transformation and MERGE with enhanced string NULL handling (-1 for latitude, longitude, description) and rounded price.'
+    );
+
+    BEGIN
+        MERGE statement_competitor_data_warehouse.silver_transformed_products AS target
+        USING (
+            WITH parsed_source AS (
+                SELECT
+                    /* Shop Name */
+                    CASE
+                        WHEN raw_shop_name IS NULL OR TRIM(raw_shop_name) = '' OR UPPER(TRIM(raw_shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN 'Unknown'
+                        ELSE TRIM(raw_shop_name)
+                    END AS shop_name,
+
+                    /* Region */
+                    CASE
+                        WHEN raw_region IS NULL OR TRIM(raw_region) = '' OR UPPER(TRIM(raw_region)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN 'Unknown'
+                        ELSE TRIM(raw_region)
+                    END AS region,
+
+                    /* City */
+                    CASE
+                        WHEN raw_city IS NULL OR TRIM(raw_city) = '' OR UPPER(TRIM(raw_city)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN 'Unknown'
+                        ELSE TRIM(raw_city)
+                    END AS city,
+
+                    /* Title */
+                    CASE
+                        WHEN raw_title IS NULL OR TRIM(raw_title) = '' OR UPPER(TRIM(raw_title)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN 'Unknown'
+                        ELSE TRIM(raw_title)
+                    END AS title,
+
+                    /* Description - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_description IS NULL OR TRIM(raw_description) = '' OR UPPER(TRIM(raw_description)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_description)
+                    END AS description,
+
+                    /* Dimensions - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_dimension IS NULL OR TRIM(raw_dimension) = '' OR UPPER(TRIM(raw_dimension)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_dimension)
+                    END AS dimensions,
+
+                    /* URL */
+                    TRIM(raw_url) AS url,
+
+                    /* Category */
+                    CASE
+                        WHEN raw_category IS NULL OR TRIM(raw_category) = '' OR UPPER(TRIM(raw_category)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNCATEGORISED') THEN 'Uncategorised'
+                        ELSE TRIM(raw_category)
+                    END AS category,
+
+                    /* Makers - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_makers IS NULL OR TRIM(raw_makers) = '' OR UPPER(TRIM(raw_makers)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_makers)
+                    END AS makers,
+
+                    /* Primary Material - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_primary_material IS NULL OR TRIM(raw_primary_material) = '' OR UPPER(TRIM(raw_primary_material)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_primary_material)
+                    END AS primary_material,
+
+                    /* Era - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_era IS NULL OR TRIM(raw_era) = '' OR UPPER(TRIM(raw_era)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_era)
+                    END AS era,
+
+                    /* Condition - String NULLs mapped to '-1' */
+                    CASE
+                        WHEN raw_condition IS NULL OR TRIM(raw_condition) = '' OR UPPER(TRIM(raw_condition)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
+                        ELSE TRIM(raw_condition)
+                    END AS condition,
+
+                    /* Latitude - String NULLs mapped to -1.0 */
+                    CASE
+                        WHEN raw_latitude IS NULL OR TRIM(raw_latitude) = '' OR UPPER(TRIM(raw_latitude)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN -1.0
+                        ELSE COALESCE(SAFE_CAST(TRIM(raw_latitude) AS FLOAT64), -1.0)
+                    END AS latitude,
+
+                    /* Longitude - String NULLs mapped to -1.0, and validated range */
+                    CASE
+                        WHEN raw_longitude IS NULL OR TRIM(raw_longitude) = '' OR UPPER(TRIM(raw_longitude)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN -1.0
+                        ELSE COALESCE(
+                            IF(
+                                SAFE_CAST(TRIM(raw_longitude) AS FLOAT64) BETWEEN -180.0 AND 180.0,
+                                SAFE_CAST(TRIM(raw_longitude) AS FLOAT64),
+                                -1.0
+                            ),
+                            -1.0
+                        )
+                    END AS longitude,
+
+                    /* Price - Rounded to 2 decimal places */
+                    COALESCE(
+                        ROUND(SAFE_CAST(REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.]', '') AS NUMERIC), 2),
+                        CAST(0.00 AS NUMERIC)
+                    ) AS price,
+
+                    /* Available */
+                    COALESCE(
+                        SAFE_CAST(TRIM(raw_available) AS BOOL),
+                        FALSE
+                    ) AS available,
+
+                    /* Parsed Timestamp cast strictly to DATETIME */
+                    CAST(COALESCE(
+                        SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%E*S', TRIM(scrape_timestamp)),
+                        SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', TRIM(scrape_timestamp)),
+                        SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', TRIM(scrape_timestamp)),
+                        SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', TRIM(scrape_timestamp)),
+                        SAFE_CAST(TRIM(scrape_timestamp) AS TIMESTAMP),
+                        CURRENT_TIMESTAMP()
+                    ) AS DATETIME) AS parsed_dt
+
+                FROM statement_competitor_data_warehouse.bronze_raw_products
+                WHERE raw_url IS NOT NULL
+                  AND TRIM(raw_url) != ''
+                  AND UPPER(TRIM(raw_url)) NOT IN ('NULL', 'NONE', 'NAN', 'N/A', '-')
+            )
+            SELECT
+                shop_name,
+                region,
+                city,
+                title,
+                description,
+                dimensions,
+                url,
+                category,
+                makers,
+                primary_material,
+                era,
+                condition,
+                latitude,
+                longitude,
+                price,
+                available,
+                parsed_dt AS timestamp
+            FROM parsed_source
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY parsed_dt DESC) = 1
+        ) AS source
+        ON target.url = source.url
+
+        WHEN MATCHED THEN
+            UPDATE SET
+                shop_name = source.shop_name,
+                region = source.region,
+                city = source.city,
+                title = source.title,
+                description = source.description,
+                dimensions = source.dimensions,
+                category = source.category,
+                makers = source.makers,
+                primary_material = source.primary_material,
+                era = source.era,
+                condition = source.condition,
+                latitude = source.latitude,
+                longitude = source.longitude,
+                price = source.price,
+                available = source.available,
+                timestamp = source.timestamp,
+                execution_id = v_execution_id,
+                batch_id = v_batch_id,
+                ingested_at = CAST(CURRENT_TIMESTAMP() AS DATETIME)
+
+        WHEN NOT MATCHED THEN
+            INSERT (
+                shop_name, latitude, longitude, region, city, category,
+                title, price, description, makers, primary_material,
+                era, condition, dimensions, url, available, timestamp,
+                execution_id, batch_id, ingested_at
+            )
+            VALUES (
+                source.shop_name, source.latitude, source.longitude, source.region,
+                source.city, source.category, source.title, source.price,
+                source.description, source.makers, source.primary_material,
+                source.era, source.condition, source.dimensions, source.url,
+                source.available, source.timestamp,
+                v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
+            );
+
+    EXCEPTION WHEN ERROR THEN
+        SET v_error_msg = FORMAT('Message: %s | Statement: %s', @@error.message, @@error.statement_text);
+
+        SET v_error_type = CASE
+            WHEN LOWER(v_error_msg) LIKE '%cast%' OR LOWER(v_error_msg) LIKE '%type%' THEN 'CASTING_FAILURE'
+            WHEN LOWER(v_error_msg) LIKE '%merge%' OR LOWER(v_error_msg) LIKE '%duplicate%' THEN 'MERGE_FAILURE'
+            ELSE 'TRANSFORMATION_FAILURE'
+        END;
+
+        INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+        )
+        VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_load_silver_products', v_error_type, v_error_msg
+        );
+
+        RAISE USING MESSAGE = FORMAT('sp_load_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+    END;
+
+    INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_load_silver_products', 'INFO_STAGE_COMPLETE',
+        FORMAT('Transformation COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
+    );
+
+END;
+
+-- =============================================================================
+-- INVOCATION & VERIFICATION
+-- =============================================================================
+
+-- Execute the Silver transformation stored procedure
+-- CALL statement_competitor_data_warehouse.sp_load_silver_products();
+
+-- Verify transformed records
+/*
+SELECT
+    COUNT(*) AS total_silver_records,
+    COUNT(DISTINCT url) AS unique_urls
+FROM statement_competitor_data_warehouse.silver_transformed_products;
+*/
