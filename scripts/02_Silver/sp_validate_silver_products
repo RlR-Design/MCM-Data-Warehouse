@@ -1,0 +1,289 @@
+/*
+
+SILVER LAYER: VALIDATION, TRANSFORMATION & LOAD STORED PROCEDURE
+Dataset: statement_competitor_data_warehouse
+Procedure: sp_validate_silver_products
+
+Description:
+This stored procedure reads data from silver_transformed_products, performs:
+
+Schema Validation & NULL Checks (ensuring URL, shop_name, title, and price are not null or empty).
+
+Price Validation (ensuring prices are numeric and $price \ge 0$, rounding to 2 decimal places).
+
+Geographical Info Validation & Lookup (matching shop names against the reference lookup table for precise latitude and longitude coordinates).
+
+Quarantine Routing (routing failed records to silver_quarantine_bad_records with error reasons).
+
+Deletion of Failed Records (deleting records failing validation checks from silver_transformed_products).
+
+UPSERT (MERGE) of valid records into silver_transformed_products.
+
+Execution metrics logging into silver_validity_log and silver_error_logs.
+=============================================================================
+*/
+
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_validate_silver_products()
+OPTIONS(strict_mode=false)
+BEGIN
+-- Declare auditing and execution variables
+DECLARE start_time TIMESTAMP;
+DECLARE v_execution_id STRING;
+DECLARE v_batch_id STRING;
+DECLARE v_error_msg STRING;
+DECLARE v_error_type STRING;
+DECLARE v_records_processed INT64 DEFAULT 0;
+DECLARE v_records_passed INT64 DEFAULT 0;
+DECLARE v_records_quarantined INT64 DEFAULT 0;
+
+SET start_time = CURRENT_TIMESTAMP();
+SET v_execution_id = GENERATE_UUID();
+SET v_batch_id = FORMAT_TIMESTAMP('BATCH_VAL_%Y%m%d_%H%M%S', start_time);
+
+-- Log start of procedure
+INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+)
+VALUES (
+GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+'sp_validate_silver_products', 'INFO_STAGE_START',
+'Starting Silver Layer Validation, Geographical Lookup, Quarantine Routing, Deletion of Invalid Records, and Transformation procedure.'
+);
+
+BEGIN
+-- Temporary staging table evaluating validation rules & geographical lookup
+CREATE OR REPLACE TEMP TABLE stg_validated_unprocessed AS
+WITH shop_lookup AS (
+SELECT 'The Thrifty Duo' AS lookup_shop, -34.09381146 AS lookup_lat, 18.84318164 AS lookup_lon UNION ALL
+SELECT 'The Retro Collection', -26.25018465, 28.11045514 UNION ALL
+SELECT 'Vintageclub', -33.91460233218425, 18.48394626 UNION ALL
+SELECT 'Retro MCM', -25.73971248, 28.2414414 UNION ALL
+SELECT 'Huisraad', -33.89934459, 18.60473736 UNION ALL
+SELECT 'Retrend', -26.14306559, 28.01834357 UNION ALL
+SELECT 'Cosmic Modern', -33.89673833, 18.60654708 UNION ALL
+SELECT 'Statement Collectables', -25.77693766, 28.2585483 UNION ALL
+SELECT 'Amphora_Studio', -26.120134, 27.901464
+),
+evaluated_source AS (
+SELECT
+b.shop_name,
+b.latitude,
+b.longitude,
+b.region,
+b.city,
+b.category,
+b.title,
+b.price,
+b.description,
+b.makers,
+b.primary_material,
+b.era,
+b.condition,
+b.dimensions,
+b.url,
+b.available,
+b.timestamp_date,
+b.timestamp_time,
+
+    -- NULL / Mandatory Field Checks
+    CASE 
+      WHEN b.url IS NULL OR TRIM(b.url) = '' OR UPPER(TRIM(b.url)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
+      WHEN b.shop_name IS NULL OR TRIM(b.shop_name) = '' OR UPPER(TRIM(b.shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
+      WHEN b.title IS NULL OR TRIM(b.title) = '' OR UPPER(TRIM(b.title)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
+      WHEN b.price IS NULL OR b.price < 0 THEN FALSE
+      ELSE TRUE
+    END AS is_mandatory_valid,
+    
+    -- Price Validation Check ($price \ge 0$)
+    CASE
+      WHEN b.price IS NULL OR b.price < 0 
+      OR b.price >= 1000000 THEN FALSE
+      ELSE TRUE
+    END AS is_price_valid,
+
+    -- Cleaned fields
+    TRIM(COALESCE(b.shop_name, 'Unknown')) AS cleaned_shop_name,
+    TRIM(b.url) AS cleaned_url,
+    TRIM(COALESCE(b.title, 'Unknown')) AS cleaned_title,
+    b.price AS parsed_price,
+    
+    -- Geographical lookup join values
+    l.lookup_lat,
+    l.lookup_lon,
+    
+    -- Raw payload snapshot for quarantine tracking
+    TO_JSON_STRING(STRUCT(
+      b.shop_name, b.latitude, b.longitude, b.region, b.city, 
+      b.category, b.title, b.price, b.description, b.makers, 
+      b.primary_material, b.era, b.condition, b.dimensions, 
+      b.url, b.available
+    )) AS raw_payload
+  FROM statement_competitor_data_warehouse.silver_transformed_products b
+  LEFT JOIN shop_lookup l ON TRIM(LOWER(b.shop_name)) = TRIM(LOWER(l.lookup_shop))
+)
+SELECT * FROM evaluated_source;
+
+-- Capture total records processed count
+SET v_records_processed = (SELECT COUNT(*) FROM stg_validated_unprocessed);
+
+-- 1. Route invalid/malformed records to quarantine table
+INSERT INTO statement_competitor_data_warehouse.silver_quarantine_bad_records (
+  quarantine_id, execution_id, batch_id, error_reason, quarantine_timestamp, raw_payload
+)
+SELECT
+  GENERATE_UUID(),
+  v_execution_id,
+  v_batch_id,
+  CONCAT(
+    CASE WHEN NOT is_mandatory_valid THEN 'MANDATORY_FIELD_NULL_OR_MISSING; ' ELSE '' END,
+    CASE WHEN NOT is_price_valid THEN 'INVALID_OR_NEGATIVE_PRICE; ' ELSE '' END
+  ),
+  CURRENT_TIMESTAMP(),
+  raw_payload
+FROM stg_validated_unprocessed
+WHERE NOT is_mandatory_valid OR NOT is_price_valid;
+
+SET v_records_quarantined = (SELECT COUNT(*) FROM stg_validated_unprocessed WHERE NOT is_mandatory_valid OR NOT is_price_valid);
+
+-- 2. Delete failed records from the main silver table so they reside only in quarantine
+DELETE FROM statement_competitor_data_warehouse.silver_transformed_products
+WHERE url IN (
+  SELECT cleaned_url 
+  FROM stg_validated_unprocessed 
+  WHERE NOT is_mandatory_valid OR NOT is_price_valid
+);
+
+-- 3. Upsert valid records into main silver table using geographical lookup coordinates
+MERGE statement_competitor_data_warehouse.silver_transformed_products AS target
+USING (
+  WITH valid_records AS (
+    SELECT
+      cleaned_shop_name AS shop_name,
+      COALESCE(lookup_lat, latitude, -1.0) AS latitude,
+      COALESCE(lookup_lon, longitude, -1.0) AS longitude,
+      COALESCE(NULLIF(TRIM(region), ''), 'Unknown') AS region,
+      COALESCE(NULLIF(TRIM(city), ''), 'Unknown') AS city,
+      COALESCE(NULLIF(TRIM(category), ''), 'Uncategorised') AS category,
+      cleaned_title AS title,
+      ROUND(parsed_price, 2) AS price,
+      COALESCE(NULLIF(TRIM(description), ''), '-1') AS description,
+      COALESCE(NULLIF(TRIM(makers), ''), '-1') AS makers,
+      COALESCE(NULLIF(TRIM(primary_material), ''), '-1') AS primary_material,
+      COALESCE(NULLIF(TRIM(era), ''), '-1') AS era,
+      COALESCE(NULLIF(TRIM(condition), ''), '-1') AS condition,
+      COALESCE(NULLIF(TRIM(dimensions), ''), '-1') AS dimensions,
+      cleaned_url AS url,
+      COALESCE(available, FALSE) AS available,
+      timestamp_date,
+      timestamp_time
+    FROM stg_validated_unprocessed
+    WHERE is_mandatory_valid AND is_price_valid
+  )
+  SELECT
+    shop_name,
+    latitude,
+    longitude,
+    region,
+    city,
+    category,
+    title,
+    price,
+    description,
+    makers,
+    primary_material,
+    era,
+    condition,
+    dimensions,
+    url,
+    available,
+    timestamp_date,
+    timestamp_time
+  FROM valid_records
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY timestamp_date DESC, timestamp_time DESC) = 1
+) AS source
+ON target.url = source.url
+WHEN MATCHED THEN
+  UPDATE SET
+    shop_name = source.shop_name,
+    latitude = source.latitude,
+    longitude = source.longitude,
+    region = source.region,
+    city = source.city,
+    category = source.category,
+    title = source.title,
+    price = source.price,
+    description = source.description,
+    makers = source.makers,
+    primary_material = source.primary_material,
+    era = source.era,
+    condition = source.condition,
+    dimensions = source.dimensions,
+    available = source.available,
+    timestamp_date = source.timestamp_date,
+    timestamp_time = source.timestamp_time,
+    execution_id = v_execution_id,
+    batch_id = v_batch_id,
+    ingested_at = CAST(CURRENT_TIMESTAMP() AS DATETIME)
+WHEN NOT MATCHED THEN
+  INSERT (
+    shop_name, latitude, longitude, region, city, category, title, price,
+    description, makers, primary_material, era, condition, dimensions,
+    url, available, timestamp_date, timestamp_time,
+    execution_id, batch_id, ingested_at
+  )
+  VALUES (
+    source.shop_name, source.latitude, source.longitude, source.region,
+    source.city, source.category, source.title, source.price,
+    source.description, source.makers, source.primary_material,
+    source.era, source.condition, source.dimensions, source.url,
+    source.available, source.timestamp_date, source.timestamp_time,
+    v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
+  );
+
+SET v_records_passed = (SELECT COUNT(*) FROM stg_validated_unprocessed WHERE is_mandatory_valid AND is_price_valid);
+
+-- 4. Log summary execution metrics into validity log table
+INSERT INTO statement_competitor_data_warehouse.silver_validity_log (
+  log_id, execution_id, batch_id, validation_timestamp,
+  records_processed, records_passed, records_quarantined, duration_seconds
+)
+VALUES (
+  GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+  v_records_processed, v_records_passed, v_records_quarantined,
+  TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND)
+);
+
+
+EXCEPTION WHEN ERROR THEN
+SET v_error_msg = FORMAT('Message: %s | Statement: %s', COALESCE(@@error.message, 'Unknown error'), COALESCE(@@error.statement_text, 'Unknown statement'));
+SET v_error_type = 'VALIDATION_PROCEDURE_FAILURE';
+
+INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+  log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+)
+VALUES (
+  GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+  'sp_validate_silver_products', v_error_type, v_error_msg
+);
+
+RAISE USING MESSAGE = FORMAT('sp_validate_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+
+
+END;
+
+-- Log successful completion
+INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+)
+VALUES (
+GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+'sp_validate_silver_products', 'INFO_STAGE_COMPLETE',
+FORMAT('Silver Validation, Deletion & Transform COMPLETED. Processed: %d, Passed: %d, Quarantined: %d in %d seconds',
+v_records_processed, v_records_passed, v_records_quarantined, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
+);
+END;
+
+-- =============================================================================
+-- INVOCATION & VERIFICATION
+-- =============================================================================
+-- CALL statement_competitor_data_warehouse.sp_validate_silver_products();
