@@ -3,7 +3,7 @@
 SILVER LAYER: TRANSFORM & LOAD PROCEDURE
 This script defines the stored procedure to extract, clean, cast, and load data from the
 Bronze raw table into the Silver transformed table using an UPSERT (MERGE) operation,
-incorporating robust sanitization against literal NULLs, NANs, NONEs, and empty values.
+incorporating robust sanitisation against literal NULLs, NANs, NONEs, and empty values.
 =============================================================================
 
 -- =============================================================================
