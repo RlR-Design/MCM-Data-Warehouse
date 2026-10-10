@@ -41,7 +41,7 @@ SET v_execution_id = GENERATE_UUID();
 SET v_batch_id = FORMAT_TIMESTAMP('BATCH_VAL_%Y%m%d_%H%M%S', start_time);
 
 -- Log start of procedure
-INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
 log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
 )
 VALUES (
@@ -86,17 +86,17 @@ b.timestamp_date,
 b.timestamp_time,
 
     -- NULL / Mandatory Field Checks
-    CASE 
+    CASE
       WHEN b.url IS NULL OR TRIM(b.url) = '' OR UPPER(TRIM(b.url)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
       WHEN b.shop_name IS NULL OR TRIM(b.shop_name) = '' OR UPPER(TRIM(b.shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
       WHEN b.title IS NULL OR TRIM(b.title) = '' OR UPPER(TRIM(b.title)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN FALSE
       WHEN b.price IS NULL OR b.price < 0 THEN FALSE
       ELSE TRUE
     END AS is_mandatory_valid,
-    
+
     -- Price Validation Check ($price \ge 0$)
     CASE
-      WHEN b.price IS NULL OR b.price < 0 
+      WHEN b.price IS NULL OR b.price < 0
       OR b.price >= 1000000 THEN FALSE
       ELSE TRUE
     END AS is_price_valid,
@@ -106,16 +106,16 @@ b.timestamp_time,
     TRIM(b.url) AS cleaned_url,
     TRIM(COALESCE(b.title, 'Unknown')) AS cleaned_title,
     b.price AS parsed_price,
-    
+
     -- Geographical lookup join values
     l.lookup_lat,
     l.lookup_lon,
-    
+
     -- Raw payload snapshot for quarantine tracking
     TO_JSON_STRING(STRUCT(
-      b.shop_name, b.latitude, b.longitude, b.region, b.city, 
-      b.category, b.title, b.price, b.description, b.makers, 
-      b.primary_material, b.era, b.condition, b.dimensions, 
+      b.shop_name, b.latitude, b.longitude, b.region, b.city,
+      b.category, b.title, b.price, b.description, b.makers,
+      b.primary_material, b.era, b.condition, b.dimensions,
       b.url, b.available
     )) AS raw_payload
   FROM statement_competitor_data_warehouse.silver_transformed_products b
@@ -148,8 +148,8 @@ SET v_records_quarantined = (SELECT COUNT(*) FROM stg_validated_unprocessed WHER
 -- 2. Delete failed records from the main silver table so they reside only in quarantine
 DELETE FROM statement_competitor_data_warehouse.silver_transformed_products
 WHERE url IN (
-  SELECT cleaned_url 
-  FROM stg_validated_unprocessed 
+  SELECT cleaned_url
+  FROM stg_validated_unprocessed
   WHERE NOT is_mandatory_valid OR NOT is_price_valid
 );
 
@@ -258,7 +258,7 @@ EXCEPTION WHEN ERROR THEN
 SET v_error_msg = FORMAT('Message: %s | Statement: %s', COALESCE(@@error.message, 'Unknown error'), COALESCE(@@error.statement_text, 'Unknown statement'));
 SET v_error_type = 'VALIDATION_PROCEDURE_FAILURE';
 
-INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
   log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
 )
 VALUES (
@@ -272,7 +272,7 @@ RAISE USING MESSAGE = FORMAT('sp_validate_silver_products failed [Execution ID: 
 END;
 
 -- Log successful completion
-INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
 log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
 )
 VALUES (
