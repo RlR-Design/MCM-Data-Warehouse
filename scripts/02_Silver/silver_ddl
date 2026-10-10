@@ -22,24 +22,6 @@ Description:
 -- 1. MAIN SILVER TRANSFORMED TABLE
 -- Standardized data types applied (STRING, FLOAT64, NUMERIC, BOOL, DATETIME)
 -- =============================================================================
-/*
-=============================================================================
-SILVER LAYER DDL SCRIPT (BigQuery)
-Dataset: statement_competitor_data_warehouse
-
-Description:
-  This script creates the physical table structures for the Silver layer.
-  1. silver_transformed_products: Main cleansed, standardised, and typed dataset.
-  2. silver_error_logs: Traps procedural & runtime errors during Silver ETL.
-  3. silver_quarantine_bad_records: Captures malformed or invalid records.
-  4. silver_validity_log: Records audit & execution summary metrics.
-=============================================================================
-*/
-
--- =============================================================================
--- 1. MAIN SILVER TRANSFORMED TABLE
--- Standardized data types applied (STRING, FLOAT64, NUMERIC, BOOL, DATETIME)
--- =============================================================================
 DROP TABLE IF EXISTS statement_competitor_data_warehouse.silver_transformed_products;
 
 CREATE TABLE statement_competitor_data_warehouse.silver_transformed_products (
@@ -72,7 +54,7 @@ CLUSTER BY shop_name, category, makers, primary_material;
 -- 2. SILVER ERROR LOGS TABLE
 -- Matches Bronze error log structure for process failure auditing
 -- =============================================================================
-CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_error_logs (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transformed_error_logs (
     log_id STRING OPTIONS(description="Unique log identifier (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier"),
     batch_id STRING OPTIONS(description="Batch load identifier"),
@@ -124,7 +106,6 @@ SELECT
 FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
 WHERE table_name LIKE 'silver_%'
 ORDER BY table_name;
-
 
 
 
