@@ -31,7 +31,7 @@ BEGIN
     SET v_execution_id = GENERATE_UUID();
     SET v_batch_id = FORMAT_TIMESTAMP('BATCH_SLV_%Y%m%d_%H%M%S', start_time);
 
-    INSERT INTO statement_competitor_data_warehouse.silver_error_logs (
+    INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
         log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
     VALUES (
