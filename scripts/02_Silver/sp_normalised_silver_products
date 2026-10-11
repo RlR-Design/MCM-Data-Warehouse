@@ -1,8 +1,8 @@
 -- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
 /*
 =============================================================================
-SILVER LAYER: NORMALISATION & STAR SCHEMA DDL
 Dataset: statement_competitor_data_warehouse
+Procedure: sp_normalised_silve_products
 
 Description:
 This script builds the dimension tables and the central normalised fact table
