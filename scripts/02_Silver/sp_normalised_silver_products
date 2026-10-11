@@ -1,0 +1,229 @@
+-- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
+/*
+=============================================================================
+SILVER LAYER: NORMALISATION & STAR SCHEMA DDL
+Dataset: statement_competitor_data_warehouse
+
+Description:
+This script builds the dimension tables and the central normalised fact table
+(`silver_normalised_products`) according to the Star Schema ER Diagram.
+It also sets up the required error logging table for the normalisation process.
+=============================================================================
+*/
+-- STREAMING_CHUNK: Declaring the normalisation stored procedure and variables...
+/*
+=============================================================================
+STORED PROCEDURE: sp_normalise_silver_products
+Description: Maps primary and foreign keys, extracts unique dimension records,
+and merges fact data into `silver_normalised_products`.
+=============================================================================
+*/
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_normalise_silver_products()
+OPTIONS(strict_mode=false)
+BEGIN
+    DECLARE start_time TIMESTAMP;
+    DECLARE v_execution_id STRING;
+    DECLARE v_batch_id STRING;
+    DECLARE v_error_msg STRING;
+    DECLARE v_error_type STRING;
+
+    SET start_time = CURRENT_TIMESTAMP();
+    SET v_execution_id = GENERATE_UUID();
+    SET v_batch_id = FORMAT_TIMESTAMP('BATCH_NORM_%Y%m%d_%H%M%S', start_time);
+
+    -- STREAMING_CHUNK: Logging start of normalisation process...
+    INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_normalise_silver_products', 'INFO_STAGE_START',
+        'Starting Star Schema Normalisation: Extracting dimensions and generating INT64 Surrogate Keys via FARM_FINGERPRINT.'
+    );
+
+    BEGIN
+        -- STREAMING_CHUNK: Populating dimension tables (Shop & Category)...
+        -- MERGE dim_shop
+        MERGE statement_competitor_data_warehouse.dim_shop AS target
+        USING (
+            SELECT
+                FARM_FINGERPRINT(shop_name_clean) AS shop_id,
+                shop_name_clean AS shop_name,
+                ANY_VALUE(region) AS region,
+                ANY_VALUE(city) AS city,
+                ANY_VALUE(latitude) AS latitude,
+                ANY_VALUE(longitude) AS longitude
+            FROM (
+                SELECT
+                    COALESCE(shop_name, 'Unknown') AS shop_name_clean,
+                    region,
+                    city,
+                    latitude,
+                    longitude
+                FROM statement_competitor_data_warehouse.silver_transformed_products
+            )
+            GROUP BY shop_name_clean
+        ) AS source
+        ON target.shop_id = source.shop_id
+        WHEN NOT MATCHED THEN
+            INSERT (shop_id, shop_name, region, city, latitude, longitude)
+            VALUES (source.shop_id, source.shop_name, source.region, source.city, source.latitude, source.longitude);
+
+        -- MERGE dim_category
+        MERGE statement_competitor_data_warehouse.dim_category AS target
+        USING (
+            SELECT DISTINCT
+                FARM_FINGERPRINT(COALESCE(category, 'Uncategorised')) AS category_id,
+                COALESCE(category, 'Uncategorised') AS category
+            FROM statement_competitor_data_warehouse.silver_transformed_products
+        ) AS source
+        ON target.category_id = source.category_id
+        WHEN NOT MATCHED THEN
+            INSERT (category_id, category)
+            VALUES (source.category_id, source.category);
+
+        -- STREAMING_CHUNK: Populating dimension tables (Maker & Material)...
+        -- MERGE dim_maker
+        MERGE statement_competitor_data_warehouse.dim_maker AS target
+        USING (
+            SELECT DISTINCT
+                FARM_FINGERPRINT(COALESCE(makers, '-1')) AS maker_id,
+                COALESCE(makers, '-1') AS makers
+            FROM statement_competitor_data_warehouse.silver_transformed_products
+        ) AS source
+        ON target.maker_id = source.maker_id
+        WHEN NOT MATCHED THEN
+            INSERT (maker_id, makers)
+            VALUES (source.maker_id, source.makers);
+
+        -- MERGE dim_material
+        MERGE statement_competitor_data_warehouse.dim_material AS target
+        USING (
+            SELECT DISTINCT
+                FARM_FINGERPRINT(COALESCE(primary_material, '-1')) AS material_id,
+                COALESCE(primary_material, '-1') AS primary_material
+            FROM statement_competitor_data_warehouse.silver_transformed_products
+        ) AS source
+        ON target.material_id = source.material_id
+        WHEN NOT MATCHED THEN
+            INSERT (material_id, primary_material)
+            VALUES (source.material_id, source.primary_material);
+
+        -- STREAMING_CHUNK: Upserting normalised data into the target fact table...
+        -- MERGE silver_normalised_products (Fact Table mapping)
+        MERGE statement_competitor_data_warehouse.silver_normalised_products AS target
+        USING (
+            SELECT
+                FARM_FINGERPRINT(url) AS product_id,
+                FARM_FINGERPRINT(COALESCE(shop_name, 'Unknown')) AS shop_id,
+                FARM_FINGERPRINT(COALESCE(category, 'Uncategorised')) AS category_id,
+                FARM_FINGERPRINT(COALESCE(makers, '-1')) AS maker_id,
+                FARM_FINGERPRINT(COALESCE(primary_material, '-1')) AS material_id,
+                url,
+                title,
+                description,
+                era,
+                condition,
+                dimensions
+            FROM statement_competitor_data_warehouse.silver_transformed_products
+            -- Pick the most recent record per URL to handle potential duplicates reliably
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY timestamp_date DESC, timestamp_time DESC) = 1
+        ) AS source
+        ON target.url = source.url
+        WHEN MATCHED THEN
+            UPDATE SET
+                shop_id = source.shop_id,
+                category_id = source.category_id,
+                maker_id = source.maker_id,
+                material_id = source.material_id,
+                title = source.title,
+                description = source.description,
+                era = source.era,
+                condition = source.condition,
+                dimensions = source.dimensions,
+                execution_id = v_execution_id,
+                batch_id = v_batch_id,
+                ingested_at = CAST(CURRENT_TIMESTAMP() AS DATETIME)
+        WHEN NOT MATCHED THEN
+            INSERT (
+                product_id, shop_id, category_id, maker_id, material_id,
+                url, title, description, era, condition, dimensions,
+                execution_id, batch_id, ingested_at
+            )
+            VALUES (
+                source.product_id, source.shop_id, source.category_id, source.maker_id, source.material_id,
+                source.url, source.title, source.description, source.era, source.condition, source.dimensions,
+                v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
+            );
+
+        -- STREAMING_CHUNK: Catching execution failures and logging error details...
+    EXCEPTION WHEN ERROR THEN
+        SET v_error_msg = FORMAT('Message: %s | Statement: %s', @@error.message, @@error.statement_text);
+        SET v_error_type = CASE
+            WHEN LOWER(v_error_msg) LIKE '%merge%' THEN 'NORMALISATION_MERGE_FAILURE'
+            WHEN LOWER(v_error_msg) LIKE '%fingerprint%' THEN 'HASH_GENERATION_FAILURE'
+            ELSE 'GENERAL_NORMALISATION_FAILURE'
+        END;
+
+        INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+        )
+        VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_normalise_silver_products', v_error_type, v_error_msg
+        );
+
+        RAISE USING MESSAGE = FORMAT('sp_normalise_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+    END;
+
+    -- STREAMING_CHUNK: Logging successful completion metrics...
+    INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_normalise_silver_products', 'INFO_STAGE_COMPLETE',
+        FORMAT('Star Schema Normalisation COMPLETED in %d seconds.', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
+    );
+END;
+
+-- =============================================================================
+-- INVOCATION & VERIFICATION
+-- =============================================================================
+-- CALL statement_competitor_data_warehouse.sp_normalise_silver_products();
+
+-- Compare Source vs. Fact Table Row Counts
+-- This ensures no data was unintentionally dropped during the merge into the fact table.
+
+SELECT
+    'statement_competitor_data_warehouse.silver_transformed_products' AS table_name,
+    COUNT(*) AS row_count
+FROM `statement_competitor_data_warehouse.silver_transformed_products`
+UNION ALL
+SELECT
+    'Fact Table (silver_normalised_products)' AS table_name,
+    COUNT(*) AS row_count
+FROM `statement_competitor_data_warehouse.silver_normalised_products`;
+
+
+-- Verify Dimension Table Population
+-- This confirms that the FARM_FINGERPRINT and COALESCE logic successfully generated unique records for your dimensions.
+
+SELECT 'dim_shop' AS dimension_table, COUNT(*) AS unique_records FROM `statement_competitor_data_warehouse.dim_shop`
+UNION ALL
+SELECT 'dim_category', COUNT(*) FROM `statement_competitor_data_warehouse.dim_category`
+UNION ALL
+SELECT 'dim_maker', COUNT(*) FROM `statement_competitor_data_warehouse.dim_maker`
+UNION ALL
+SELECT 'dim_material', COUNT(*) FROM `statement_competitor_data_warehouse.dim_material`;
+
+-- Check for Unmapped Dimension Keys (Orphaned Facts)
+-- This checks if there are any records in the fact table pointing to a surrogate key (like shop_id) that does not
+-- exist in the corresponding dimension table. It challenges the assumption that the COALESCE logic caught absolutely everything.
+
+SELECT
+    COUNT(f.shop_id) AS missing_shop_ids
+FROM `statement_competitor_data_warehouse.silver_normalised_products` f
+LEFT JOIN `statement_competitor_data_warehouse.dim_shop` d
+    ON f.shop_id = d.shop_id
+WHERE d.shop_id IS NULL;
