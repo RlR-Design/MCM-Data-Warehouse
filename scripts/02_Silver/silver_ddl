@@ -108,4 +108,97 @@ WHERE table_name LIKE 'silver_%'
 ORDER BY table_name;
 
 
+/*
+=============================================================================
+HISTORISATION TABLE DDL SCRIPT
+Dataset: statement_competitor_data_warehouse
+Table: dim_price_history
+=============================================================================
 
+DESCRIPTION:
+This DDL script creates the `dim_price_history` table and the `silver_historisation_error_logs` table within the statement_competitor_data_warehouse. This table is
+designed to track the historical state of a product's price and availability.
+
+To capture this history effectively, it utilises a Type 2 Slowly Changing
+Dimension (SCD Type 2) format. Unlike a standard table that overwrites old
+data when an update occurs, an SCD Type 2 table inserts a brand new row for
+every change.
+
+=============================================================================
+WARNING - DATA LOSS RISK:
+
+Do not run this script in a production environment unless you are actively
+rebuilding the warehouse from scratch, recovering from a total system failure,
+or intentionally resetting the historical data structures.
+=============================================================================
+*/
+
+-- STREAMING_CHUNK: Creating the primary dim_price_history table for SCD Type 2 tracking...
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_price_history (
+
+    -- ==========================================
+    -- Primary and Foreign Keys (From ERD)
+    -- ==========================================
+    price_log_id INT64 OPTIONS(description="Primary Key (PK): Unique surrogate identifier for this specific price history log entry"),
+    product_id INT64 OPTIONS(description="Foreign Key (FK): References the unique product_id in the fact_product_scrape table"),
+
+    -- ==========================================
+    -- Core Tracked Attributes (From ERD)
+    -- ==========================================
+    scrape_timestamp TIMESTAMP OPTIONS(description="The original timestamp when this exact price and availability was scraped from the source"),
+    price NUMERIC OPTIONS(description="The listed selling price of the item in ZAR at the time of the scrape (Mapped to DECIMAL)"),
+    available BOOL OPTIONS(description="Boolean value checking if the item is still available (TRUE) or sold (FALSE)"),
+
+    -- ==========================================
+    -- SCD Type 2 Tracking Columns
+    -- ==========================================
+    valid_from TIMESTAMP OPTIONS(description="SCD Type 2: The exact timestamp from which this price/availability record became active"),
+    valid_to TIMESTAMP OPTIONS(description="SCD Type 2: The timestamp when this record was superseded by a new change (NULL if currently active)"),
+    is_current BOOL OPTIONS(description="SCD Type 2: Boolean flag indicating if this is the most recent, active price record for the product"),
+
+    -- ==========================================
+    -- Standard Data Warehouse Audit Columns
+    -- ==========================================
+    execution_id STRING OPTIONS(description="Generated UUID appended when the stored procedure runs for traceability"),
+    batch_id STRING OPTIONS(description="Generated batch identifier for pipeline execution tracking"),
+    ingested_at DATETIME OPTIONS(description="Timestamp indicating when this specific row was inserted into the gold layer table")
+
+)
+PARTITION BY DATE(valid_from)
+CLUSTER BY product_id, is_current;
+
+-- STREAMING_CHUNK: Creating the silver_historisation_error_logs table for pipeline auditing...
+-- =============================================================================
+-- ERROR LOGGING TABLE (Silver Layer Pipeline Trapping)
+-- =============================================================================
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.silver_historisation_error_logs (
+    log_id STRING OPTIONS(description="Unique identifier for the error log entry (UUID)"),
+    execution_id STRING OPTIONS(description="Pipeline execution identifier linking to the stored procedure run"),
+    batch_id STRING OPTIONS(description="Batch load identifier for grouping errors by execution run"),
+    error_timestamp TIMESTAMP OPTIONS(description="The exact timestamp when the error or informational event occurred"),
+    procedure_name STRING OPTIONS(description="The name of the stored procedure or component that triggered the log"),
+    error_type STRING OPTIONS(description="Categorical type of error (e.g., SCD2_INSERT_FAILURE, UPDATE_FAILURE, INFO)"),
+    error_details STRING OPTIONS(description="Detailed error message, stack trace, or informational payload context")
+)
+PARTITION BY DATE(error_timestamp);
+
+
+/*
+=============================================================================
+SILVER LAYER: RECONCILIATION & VALIDATION PROCEDURE
+
+If anomalies are detected, they are logged into `silver_reconciled_error_logs`.
+=============================================================================
+ */
+
+ -- STREAMING_CHUNK: Creating the reconciliation error logs table for audit tracking...
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_reconciled_error_logs (
+    log_id STRING OPTIONS(description="Unique identifier for the log entry (UUID)"),
+    execution_id STRING OPTIONS(description="Pipeline execution identifier linking to the stored procedure run"),
+    batch_id STRING OPTIONS(description="Batch load identifier for grouping errors by execution run"),
+    error_timestamp TIMESTAMP OPTIONS(description="Timestamp when the reconciliation error was flagged"),
+    procedure_name STRING OPTIONS(description="Name of the procedure logging the error"),
+    error_type STRING OPTIONS(description="Categorical type of error (e.g., DATA_DROP_MISMATCH, ORPHAN_KEY, FINANCIAL_ANOMALY)"),
+    error_details STRING OPTIONS(description="Detailed error message and context metrics")
+)
+PARTITION BY DATE(error_timestamp);
