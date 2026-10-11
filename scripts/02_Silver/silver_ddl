@@ -108,6 +108,76 @@ WHERE table_name LIKE 'silver_%'
 ORDER BY table_name;
 
 
+-- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
+/*
+=============================================================================
+SILVER LAYER: NORMALISATION & STAR SCHEMA DDL
+Dataset: statement_competitor_data_warehouse
+
+Description:
+This script builds the dimension tables and the central normalised fact table 
+(`silver_normalised_products`) according to the Star Schema ER Diagram.
+It also sets up the required error logging table for the normalisation process.
+=============================================================================
+*/
+
+-- 1. Dimension Tables
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_shop (
+    shop_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
+    shop_name STRING,
+    region STRING,
+    city STRING,
+    latitude FLOAT64,
+    longitude FLOAT64
+);
+
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_category (
+    category_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
+    category STRING
+);
+
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_maker (
+    maker_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
+    makers STRING
+);
+
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_material (
+    material_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
+    primary_material STRING
+);
+
+-- STREAMING_CHUNK: Setting up DDL for the normalised target fact table and error logs...
+-- 2. Normalised Target Table (Fact Table: fact_product_scrape representation)
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.fact_product_scrape (
+    product_id INT64 OPTIONS(description="Primary Key (Hash of URL)"),
+    shop_id INT64 OPTIONS(description="Foreign Key to dim_shop"),
+    category_id INT64 OPTIONS(description="Foreign Key to dim_category"),
+    maker_id INT64 OPTIONS(description="Foreign Key to dim_maker"),
+    material_id INT64 OPTIONS(description="Foreign Key to dim_material"),
+    url STRING OPTIONS(description="Unique Key / Natural Key"),
+    title STRING,
+    description STRING,
+    era STRING,
+    condition STRING,
+    dimensions STRING,
+    execution_id STRING OPTIONS(description="Pipeline execution tracking ID"),
+    batch_id STRING OPTIONS(description="Batch load tracking ID"),
+    ingested_at DATETIME OPTIONS(description="Timestamp of normalisation")
+)
+CLUSTER BY shop_id, category_id, maker_id;
+
+-- 3. Error Logging Table
+CREATE OR REPLACE TABLE statement_competitor_data_warehouse.silver_normalised_error_logs (
+    log_id STRING OPTIONS(description="Unique log UUID"),
+    execution_id STRING,
+    batch_id STRING,
+    error_timestamp TIMESTAMP,
+    procedure_name STRING,
+    error_type STRING,
+    error_details STRING
+)
+PARTITION BY DATE(error_timestamp);
+
 /*
 =============================================================================
 HISTORISATION TABLE DDL SCRIPT
