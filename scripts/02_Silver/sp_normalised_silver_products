@@ -1,6 +1,7 @@
 -- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
 /*
 =============================================================================
+
 Dataset: statement_competitor_data_warehouse
 Procedure: sp_normalised_silve_products
 
@@ -110,8 +111,8 @@ BEGIN
             VALUES (source.material_id, source.primary_material);
 
         -- STREAMING_CHUNK: Upserting normalised data into the target fact table...
-        -- MERGE silver_normalised_products (Fact Table mapping)
-        MERGE statement_competitor_data_warehouse.silver_normalised_products AS target
+        -- MERGE fact_product_scrape (Fact Table mapping)
+        MERGE statement_competitor_data_warehouse.fact_product_scrape AS target
         USING (
             SELECT
                 FARM_FINGERPRINT(url) AS product_id,
