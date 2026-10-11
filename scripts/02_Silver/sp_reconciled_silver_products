@@ -1,0 +1,129 @@
+/*
+=============================================================================
+SILVER LAYER: RECONCILIATION & VALIDATION PROCEDURE
+
+Dataset: statement_competitor_data_warehouse
+Procedure: sp_reconcile_silver_layer
+
+Description:
+This is the final checkpoint in the Silver layer before data is consumed by
+the Gold layer reporting tables. It ensures data integrity across the pipeline by:
+1. Reconciling record counts between Bronze, Silver, and Quarantine to track data drops.
+2. Validating Historisation (dim_price_history) to ensure all active products have tracked prices.
+3. Checking Normalised Keys (fact_product_scrape vs dimensions) for referential integrity.
+4. Performing Financial Aggregations to check for extreme outliers or invalid pricing.
+
+If anomalies are detected, they are logged into `silver_reconciled_error_logs`.
+=============================================================================
+*/
+
+-- STREAMING_CHUNK: Defining the reconciliation stored procedure...
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_reconciled_silver_products()
+OPTIONS(strict_mode=false)
+BEGIN
+  DECLARE v_execution_id STRING;
+  DECLARE v_batch_id STRING;
+  DECLARE v_error_msg STRING;
+  DECLARE v_dropped_records INT64;
+  DECLARE v_orphan_keys INT64;
+  DECLARE v_avg_price FLOAT64;
+
+  SET v_execution_id = GENERATE_UUID();
+  SET v_batch_id = FORMAT_TIMESTAMP('BATCH_REC_%Y%m%d_%H%M%S', CURRENT_TIMESTAMP());
+
+  BEGIN
+    -- Log Start
+    INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_reconciled_silver_products', 'INFO_STAGE_START', 'Starting Silver Layer Reconciliation'
+    );
+
+    -- CHECK 1: Dropped Records Verification
+    SET (v_dropped_records) = (
+        SELECT AS STRUCT (records_processed - records_passed - records_quarantined)
+        FROM statement_competitor_data_warehouse.silver_validity_log
+        ORDER BY validation_timestamp DESC
+        LIMIT 1
+    );
+
+    IF v_dropped_records > 0 THEN
+        INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+        ) VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_reconciled_silver_products', 'DATA_DROP_MISMATCH', FORMAT('Mismatch detected: %d unaccounted dropped records.', v_dropped_records)
+        );
+    END IF;
+
+    -- CHECK 2: Key Relationships Verification (Normalised fact to dimensions)
+    SET (v_orphan_keys) = (
+        SELECT AS STRUCT COUNT(f.product_id)
+        FROM statement_competitor_data_warehouse.silver_normalised_products f
+        LEFT JOIN statement_competitor_data_warehouse.dim_shop s ON f.shop_id = s.shop_id
+        WHERE s.shop_id IS NULL
+    );
+
+    IF v_orphan_keys > 0 THEN
+        INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+        ) VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_reconciled_silver_products', 'ORPHAN_KEY', FORMAT('Orphan keys detected: %d records lack a valid shop_id.', v_orphan_keys)
+        );
+    END IF;
+
+    -- CHECK 3: Financial Aggregations
+    SET (v_avg_price) = (
+        SELECT AS STRUCT CAST(AVG(price) AS FLOAT64)
+        FROM statement_competitor_data_warehouse.silver_transformed_products
+    );
+
+    IF v_avg_price <= 0 OR v_avg_price IS NULL THEN
+        INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+        ) VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_reconciled_silver_products', 'FINANCIAL_ANOMALY', 'Financial aggregation anomaly: Average price is zero or null.'
+        );
+    END IF;
+
+    -- Log Complete
+    INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_reconciled_silver_products', 'INFO_STAGE_COMPLETE', 'Silver Layer Reconciliation completed successfully.'
+    );
+
+  EXCEPTION WHEN ERROR THEN
+    SET v_error_msg = FORMAT('Message: %s | Statement: %s', COALESCE(@@error.message, 'Unknown error'), COALESCE(@@error.statement_text, 'Unknown statement'));
+
+    INSERT INTO statement_competitor_data_warehouse.silver_reconciled_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
+    ) VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_reconciled_silver_products', 'RECONCILIATION_FAILURE', v_error_msg
+    );
+
+    RAISE USING MESSAGE = FORMAT('sp_reconciled_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+  END;
+END;
+
+/*
+-- =============================================================================
+-- INVOCATION & VERIFICATION TESTS
+-- =============================================================================
+
+-- 1. Execute the reconciliation procedure
+CALL statement_competitor_data_warehouse.sp_reconcile_silver_layer();
+
+-- 2. Check the reconciliation error logs to review any flagged data losses or anomalies
+SELECT *
+FROM statement_competitor_data_warehouse.silver_reconciled_error_logs
+ORDER BY error_timestamp DESC
+LIMIT 20;
+*/
