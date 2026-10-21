@@ -1,6 +1,6 @@
 /*
 =============================================================================
-2. BRONZE LAYER (Landing / Raw Data)
+2. BRONZE LAYER (Landing / Raw Data)(BigQuery)
 
 WARNING:
     Running this script will delete all the historical data that exists in the current table. This script should only be

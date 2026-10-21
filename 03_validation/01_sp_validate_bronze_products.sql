@@ -3,7 +3,7 @@
 -- BRONZE LAYER DATA VALIDATION STORED PROCEDURE
 -- Validates raw data in the statement_competitor_data_warehouse
 -- Identifies records failing mandatory checks (Null URLs, Unparseable Prices),
--- Identifies empty records and fills them with NULL values    
+-- Identifies empty records and fills them with NULL values
 -- quarantines them, and logs comprehensive pipeline execution metrics.
 -- =============================================================================
 

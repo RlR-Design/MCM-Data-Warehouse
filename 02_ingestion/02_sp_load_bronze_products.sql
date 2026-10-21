@@ -223,4 +223,3 @@ SELECT *
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
 ORDER BY error_timestamp DESC
 LIMIT 10;
-
