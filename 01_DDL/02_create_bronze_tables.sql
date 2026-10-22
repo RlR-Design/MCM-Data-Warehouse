@@ -1,14 +1,18 @@
 /*
-=============================================================================
-2. BRONZE LAYER (Landing / Raw Data)(BigQuery)
-
-WARNING:
-    Running this script will delete all the historical data that exists in the current table. This script should only be
-    used in the event or a system failure or in the event that the system needs to be refreshed.
-=============================================================================
+===============================================================================
+Script   : 02_create_bronze_tables.sql
+Layer    : Bronze
+Purpose  : Creates the Bronze landing table and its log and quarantine tables.
+           Bronze stores scraped data exactly as received, all as STRING.
+When     : Initial setup, after 01_create_dataset.sql. Safe to re-run.
+Warning  : Changes to columns here are not applied to existing tables.
+           Use ALTER TABLE ... ADD COLUMN IF NOT EXISTS instead.
+===============================================================================
 */
 
-
+-- -----------------------------------------------------------------------------
+-- bronze_raw_products: raw scraped rows, one batch per CSV load
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_products (
     raw_shop_name STRING,
     raw_latitude STRING,
@@ -32,6 +36,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_produc
     ingested_at TIMESTAMP
 );
 
+-- -----------------------------------------------------------------------------
+-- bronze_raw_error_logs: start, completion and error events of Bronze procedures
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_error_logs (
     log_id STRING,
     execution_id STRING,
@@ -42,6 +49,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_error_
     error_details STRING
 );
 
+-- -----------------------------------------------------------------------------
+-- bronze_quarantine_bad_records: rows failing Bronze validation (as JSON)
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_quarantine_bad_records (
     quarantine_id STRING,
     execution_id STRING,
@@ -51,6 +61,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_quarantine
     raw_payload STRING
 );
 
+-- -----------------------------------------------------------------------------
+-- bronze_validity_log: row counts per validated batch
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_validity_log (
     log_id STRING,
     execution_id STRING,
@@ -61,3 +74,15 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_validity_l
     records_quarantined INT64,
     duration_seconds INT64
 );
+
+
+/*
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- All four Bronze tables exist.
+SELECT table_name, creation_time
+FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
+WHERE table_name LIKE 'bronze_%'
+ORDER BY table_name;
+*/

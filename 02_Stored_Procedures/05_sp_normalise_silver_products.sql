@@ -1,24 +1,18 @@
--- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
 /*
-=============================================================================
-
-Dataset: statement_competitor_data_warehouse
-Procedure: sp_normalise_silver_products
-
-Description:
-This script builds the dimension tables and the central normalised fact table
-(`fact_product_scrape`) according to the Star Schema ER Diagram.
-It also sets up the required error logging table for the normalisation process.
-=============================================================================
+===============================================================================
+Script   : 05_sp_normalise_silver_products.sql
+Layer    : Silver
+Purpose  : Builds the star schema from silver_transformed_products:
+           dim_shop, dim_category, dim_maker, dim_material and
+           fact_product_scrape. Keys are FARM_FINGERPRINT hashes of the
+           normalised value, so spelling variants share one key.
+When     : Deploy at setup and after any change. Runs as step 5 of sp_run_pipeline.
+Requires : 04_sp_validate_silver_products has completed.
+Logs     : silver_normalised_error_logs
+Warning  : Dimension rows not referenced by any fact row are deleted on every run.
+===============================================================================
 */
--- STREAMING_CHUNK: Declaring the normalisation stored procedure and variables...
-/*
-=============================================================================
-STORED PROCEDURE: sp_normalise_silver_products
-Description: Maps primary and foreign keys, extracts unique dimension records,
-and merges fact data into `fact_product_scrape`.
-=============================================================================
-*/
+
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_normalise_silver_products()
 OPTIONS(strict_mode=false)
 BEGIN
@@ -28,11 +22,12 @@ BEGIN
     DECLARE v_error_msg STRING;
     DECLARE v_error_type STRING;
 
+    -- Initialise run identifiers.
     SET start_time = CURRENT_TIMESTAMP();
     SET v_execution_id = GENERATE_UUID();
     SET v_batch_id = FORMAT_TIMESTAMP('BATCH_NORM_%Y%m%d_%H%M%S', start_time);
 
-    -- STREAMING_CHUNK: Logging start of normalisation process...
+    -- Log start.
     INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
         log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
     )
@@ -43,10 +38,8 @@ BEGIN
     );
 
     BEGIN
-        -- STREAMING_CHUNK: Normalising dimension keys...
-        -- Dimension keys are built from a normalised form of each value (lower case,
-        -- trimmed, single spaces), so "Teak", "teak" and "Teak " share one key.
-        -- The display name stored in the dimension is the most common original spelling.
+        -- Stage Silver rows with normalised dimension keys (lower case, trimmed,
+        -- single spaces), so "Teak", "teak" and "Teak " share one key.
         CREATE TEMP TABLE stg_normalised AS
         SELECT
             url,
@@ -71,9 +64,7 @@ BEGIN
             LOWER(REGEXP_REPLACE(TRIM(COALESCE(primary_material, '-1')), r'\s+', ' ')) AS material_key
         FROM statement_competitor_data_warehouse.silver_transformed_products;
 
-        -- STREAMING_CHUNK: Populating dimension tables (Shop & Category)...
-        -- MERGE dim_shop: most common known region/city/location per shop.
-        -- Existing shops are updated when their attributes change.
+        -- Merge dim_shop: most common spelling, known region, city and location per shop.
         MERGE statement_competitor_data_warehouse.dim_shop AS target
         USING (
             SELECT
@@ -127,7 +118,7 @@ BEGIN
             INSERT (shop_id, shop_name, region, city, latitude, longitude)
             VALUES (source.shop_id, source.shop_name, source.region, source.city, source.latitude, source.longitude);
 
-        -- MERGE dim_category
+        -- Merge dim_category: most common spelling per category.
         MERGE statement_competitor_data_warehouse.dim_category AS target
         USING (
             SELECT
@@ -143,8 +134,7 @@ BEGIN
             INSERT (category_id, category)
             VALUES (source.category_id, source.category);
 
-        -- STREAMING_CHUNK: Populating dimension tables (Maker & Material)...
-        -- MERGE dim_maker
+        -- Merge dim_maker: most common spelling per maker.
         MERGE statement_competitor_data_warehouse.dim_maker AS target
         USING (
             SELECT
@@ -160,7 +150,7 @@ BEGIN
             INSERT (maker_id, makers)
             VALUES (source.maker_id, source.makers);
 
-        -- MERGE dim_material
+        -- Merge dim_material: most common spelling per material.
         MERGE statement_competitor_data_warehouse.dim_material AS target
         USING (
             SELECT
@@ -176,8 +166,7 @@ BEGIN
             INSERT (material_id, primary_material)
             VALUES (source.material_id, source.primary_material);
 
-        -- STREAMING_CHUNK: Upserting normalised data into the target fact table...
-        -- MERGE fact_product_scrape (Fact Table mapping). Only changed rows are rewritten.
+        -- Merge fact_product_scrape: one row per URL. Only changed rows are rewritten.
         MERGE statement_competitor_data_warehouse.fact_product_scrape AS target
         USING (
             SELECT
@@ -193,7 +182,7 @@ BEGIN
                 condition,
                 dimensions
             FROM stg_normalised
-            -- Pick the most recent record per URL to handle potential duplicates reliably
+            -- Keep the most recent row per URL.
             QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY timestamp_date DESC, timestamp_time DESC) = 1
         ) AS source
         ON target.url = source.url
@@ -233,10 +222,7 @@ BEGIN
                 v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
             );
 
-        -- STREAMING_CHUNK: Removing unused dimension members...
-        -- Remove dimension rows no fact row points to any more (e.g. old keys from
-        -- before case-insensitive matching, or values that no longer occur).
-        -- Dimensions are fully derived from Silver, so nothing is lost.
+        -- Delete dimension rows no fact row references (derived from Silver, nothing is lost).
         DELETE FROM statement_competitor_data_warehouse.dim_shop d
         WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.shop_id = d.shop_id);
 
@@ -249,8 +235,8 @@ BEGIN
         DELETE FROM statement_competitor_data_warehouse.dim_material d
         WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.material_id = d.material_id);
 
-        -- STREAMING_CHUNK: Catching execution failures and logging error details...
     EXCEPTION WHEN ERROR THEN
+        -- Capture and classify the error.
         SET v_error_msg = FORMAT('Message: %s | Statement: %s', @@error.message, @@error.statement_text);
         SET v_error_type = CASE
             WHEN LOWER(v_error_msg) LIKE '%merge%' THEN 'NORMALISATION_MERGE_FAILURE'
@@ -258,6 +244,7 @@ BEGIN
             ELSE 'GENERAL_NORMALISATION_FAILURE'
         END;
 
+        -- Log the error.
         INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
             log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
         )
@@ -266,10 +253,11 @@ BEGIN
             'sp_normalise_silver_products', v_error_type, v_error_msg
         );
 
+        -- Re-raise so the caller sees the failure.
         RAISE USING MESSAGE = FORMAT('sp_normalise_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
     END;
 
-    -- STREAMING_CHUNK: Logging successful completion metrics...
+    -- Log completion.
     INSERT INTO statement_competitor_data_warehouse.silver_normalised_error_logs (
         log_id, execution_id, batch_id, error_timestamp, procedure_name, error_type, error_details
     )
@@ -280,43 +268,40 @@ BEGIN
     );
 END;
 
--- =============================================================================
--- INVOCATION & VERIFICATION
--- =============================================================================
--- CALL statement_competitor_data_warehouse.sp_normalise_silver_products();
 
--- Compare Source vs. Fact Table Row Counts
--- This ensures no data was unintentionally dropped during the merge into the fact table.
+/*
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- Rebuild the star schema.
+CALL statement_competitor_data_warehouse.sp_normalise_silver_products();
 
+-- Fact covers every Silver product (expect equal counts).
 SELECT
-    'statement_competitor_data_warehouse.silver_transformed_products' AS table_name,
-    COUNT(*) AS row_count
-FROM `statement_competitor_data_warehouse.silver_transformed_products`
-UNION ALL
+    (SELECT COUNT(*) FROM statement_competitor_data_warehouse.silver_transformed_products) AS silver_rows,
+    (SELECT COUNT(*) FROM statement_competitor_data_warehouse.fact_product_scrape) AS fact_rows;
+
+-- Dimension sizes.
+SELECT 'dim_shop' AS dimension, COUNT(*) AS members FROM statement_competitor_data_warehouse.dim_shop
+UNION ALL SELECT 'dim_category', COUNT(*) FROM statement_competitor_data_warehouse.dim_category
+UNION ALL SELECT 'dim_maker', COUNT(*) FROM statement_competitor_data_warehouse.dim_maker
+UNION ALL SELECT 'dim_material', COUNT(*) FROM statement_competitor_data_warehouse.dim_material;
+
+-- Orphaned fact keys per dimension (expect all 0).
 SELECT
-    'Fact Table (fact_product_scrape)' AS table_name,
-    COUNT(*) AS row_count
-FROM `statement_competitor_data_warehouse.fact_product_scrape`;
+    COUNTIF(s.shop_id IS NULL) AS missing_shop,
+    COUNTIF(c.category_id IS NULL) AS missing_category,
+    COUNTIF(m.maker_id IS NULL) AS missing_maker,
+    COUNTIF(mat.material_id IS NULL) AS missing_material
+FROM statement_competitor_data_warehouse.fact_product_scrape f
+LEFT JOIN statement_competitor_data_warehouse.dim_shop s ON s.shop_id = f.shop_id
+LEFT JOIN statement_competitor_data_warehouse.dim_category c ON c.category_id = f.category_id
+LEFT JOIN statement_competitor_data_warehouse.dim_maker m ON m.maker_id = f.maker_id
+LEFT JOIN statement_competitor_data_warehouse.dim_material mat ON mat.material_id = f.material_id;
 
-
--- Verify Dimension Table Population
--- This confirms that the FARM_FINGERPRINT and COALESCE logic successfully generated unique records for your dimensions.
-
-SELECT 'dim_shop' AS dimension_table, COUNT(*) AS unique_records FROM `statement_competitor_data_warehouse.dim_shop`
-UNION ALL
-SELECT 'dim_category', COUNT(*) FROM `statement_competitor_data_warehouse.dim_category`
-UNION ALL
-SELECT 'dim_maker', COUNT(*) FROM `statement_competitor_data_warehouse.dim_maker`
-UNION ALL
-SELECT 'dim_material', COUNT(*) FROM `statement_competitor_data_warehouse.dim_material`;
-
--- Check for Unmapped Dimension Keys (Orphaned Facts)
--- This checks if there are any records in the fact table pointing to a surrogate key (like shop_id) that does not
--- exist in the corresponding dimension table. It challenges the assumption that the COALESCE logic caught absolutely everything.
-
-SELECT
-    COUNT(f.shop_id) AS missing_shop_ids
-FROM `statement_competitor_data_warehouse.fact_product_scrape` f
-LEFT JOIN `statement_competitor_data_warehouse.dim_shop` d
-    ON f.shop_id = d.shop_id
-WHERE d.shop_id IS NULL;
+-- Case or spacing variants left in a dimension (expect no rows).
+SELECT LOWER(REGEXP_REPLACE(TRIM(primary_material), r'\s+', ' ')) AS material_key, COUNT(*) AS n
+FROM statement_competitor_data_warehouse.dim_material
+GROUP BY material_key
+HAVING COUNT(*) > 1;
+*/

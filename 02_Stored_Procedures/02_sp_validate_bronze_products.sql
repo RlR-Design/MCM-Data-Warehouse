@@ -1,218 +1,188 @@
--- STREAMING_CHUNK: Initialising procedure and declaring variables...
--- =============================================================================
--- BRONZE LAYER DATA VALIDATION STORED PROCEDURE
--- Validates raw data in the statement_competitor_data_warehouse
--- Identifies records failing mandatory checks (missing URLs, unparseable prices;
--- empty or whitespace-only URLs count as missing), quarantines them, and logs
--- comprehensive pipeline execution metrics. Bronze rows themselves are never modified.
--- =============================================================================
+/*
+===============================================================================
+Script   : 02_sp_validate_bronze_products.sql
+Layer    : Bronze
+Purpose  : Checks one Bronze batch against the mandatory rules and copies
+           failing rows to bronze_quarantine_bad_records:
+             1. URL present (not null, empty or whitespace)
+             2. Price parseable after removing all but digits, '.' and '-'
+           Bronze rows are never modified.
+When     : Deploy at setup and after any change. Runs as step 2 of sp_run_pipeline.
+Requires : 01_sp_load_bronze_products has loaded the batch.
+Params   : p_batch_id  Bronze batch to validate. NULL = latest loaded batch.
+Logs     : bronze_raw_error_logs, bronze_validity_log
+Warning  : Re-running for a batch replaces that batch's quarantine rows.
+===============================================================================
+*/
 
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_validate_bronze_products (IN p_batch_id STRING)
 BEGIN
-  -- Declare variables for tracking execution duration and unique execution IDs
-  DECLARE start_time TIMESTAMP;
-  DECLARE v_execution_id STRING;
+    DECLARE start_time TIMESTAMP;
+    DECLARE v_execution_id STRING;
+    DECLARE v_batch_id STRING;
+    DECLARE v_error_msg STRING;
+    DECLARE v_records_processed INT64;
+    DECLARE v_records_failed INT64;
+    DECLARE v_records_passed INT64;
 
-  -- Declare variables for batch tracking and error handling
-  DECLARE v_batch_id STRING;
-  DECLARE v_error_msg STRING;
+    -- Initialise run identifiers.
+    SET start_time = CURRENT_TIMESTAMP();
+    SET v_execution_id = GENERATE_UUID();
 
-  -- Declare metric variables to track the outcomes of the validation process
-  DECLARE v_records_processed INT64;
-  DECLARE v_records_failed INT64;
-  DECLARE v_records_passed INT64;
-
-  -- Initialize tracking variables
-  SET start_time = CURRENT_TIMESTAMP();
-  SET v_execution_id = GENERATE_UUID();
-
-  -- Ensure the target raw products table has the necessary audit columns.
-  -- These columns are used to track lineage back to the specific extraction batch.
-  ALTER TABLE statement_competitor_data_warehouse.bronze_raw_products
-    ADD COLUMN IF NOT EXISTS execution_id STRING,
-    ADD COLUMN IF NOT EXISTS batch_id STRING,
-    ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMP;
-
-  -- STREAMING_CHUNK: Resolving the target batch ID for validation...
-  -- Resolve the batch ID to validate. If no batch ID is provided as an argument,
-  -- dynamically find the most recently ingested batch in the raw table.
-  SET v_batch_id = COALESCE(
-    p_batch_id,
-    (
-      SELECT batch_id
-      FROM statement_competitor_data_warehouse.bronze_raw_products
-      WHERE batch_id IS NOT NULL
-      ORDER BY ingested_at DESC, batch_id DESC
-      LIMIT 1
-    )
-  );
-
-  -- Failsafe: If the table is entirely empty and no parameter was passed, halt execution.
-  IF v_batch_id IS NULL THEN
-    RAISE USING MESSAGE = 'sp_validate_bronze_products failed: no bronze batch_id found to validate';
-  END IF;
-
-  -- STREAMING_CHUNK: Logging stage initialisation and preparing idempotency...
-  -- Log the start of the validation process to the audit table.
-  INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
-    log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
-  )
-  VALUES (
-    GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-    'sp_validate_bronze_products', 'INFO_STAGE_START',
-    FORMAT('[1/2] VALIDATING bronze batch %s', v_batch_id)
-  );
-
-  BEGIN
-    -- Idempotency check: Clear any existing quarantined records for this specific batch
-    -- in case this procedure is being re-run after a previous failure.
-    DELETE FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
-    WHERE batch_id = v_batch_id;
-
-    -- STREAMING_CHUNK: Executing mandatory validation rules and quarantining failures...
-    -- IDENTIFY AND QUARANTINE BAD RECORDS
-    -- Bronze is kept exactly as received (no in-place cleaning); blanks and
-    -- whitespace are handled here and in sp_load_silver_products instead.
-    -- Business Rules:
-    -- 1. raw_url cannot be null, empty or whitespace (required for unique identification).
-    -- 2. raw_price must be parseable as a FLOAT64 after stripping non-numeric characters (except . and -).
-    INSERT INTO statement_competitor_data_warehouse.bronze_quarantine_bad_records (
-        quarantine_id, execution_id, batch_id, error_reason, quarantine_timestamp, raw_payload
-    )
-    SELECT
-        GENERATE_UUID(),
-        v_execution_id,
-        v_batch_id,
-        CASE
-            WHEN NULLIF(TRIM(raw_url), '') IS NULL THEN 'URL is null or empty'
-            WHEN SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL THEN 'Price not parseable'
-        END AS error_reason,
-        CURRENT_TIMESTAMP(),
-        TO_JSON_STRING(t)
-    FROM statement_competitor_data_warehouse.bronze_raw_products AS t
-    WHERE batch_id = v_batch_id
-      AND (NULLIF(TRIM(raw_url), '') IS NULL OR SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL);
-
-    -- STREAMING_CHUNK: Calculating metrics and inserting validity statistics...
-    -- Count the total number of records processed in this batch
-    SET v_records_processed = (
-      SELECT COUNT(*)
-      FROM statement_competitor_data_warehouse.bronze_raw_products
-      WHERE batch_id = v_batch_id
+    -- Resolve the batch: the parameter, else the most recently loaded batch.
+    SET v_batch_id = COALESCE(
+        p_batch_id,
+        (
+            SELECT batch_id
+            FROM statement_competitor_data_warehouse.bronze_raw_products
+            WHERE batch_id IS NOT NULL
+            ORDER BY ingested_at DESC, batch_id DESC
+            LIMIT 1
+        )
     );
 
-    -- Count how many records failed and were sent to quarantine
-    SET v_records_failed = (
-      SELECT COUNT(*)
-      FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
-      WHERE batch_id = v_batch_id
-    );
+    -- Stop if there is nothing to validate.
+    IF v_batch_id IS NULL THEN
+        RAISE USING MESSAGE = 'sp_validate_bronze_products failed: no bronze batch_id found to validate';
+    END IF;
 
-    -- Derive passed records
-    SET v_records_passed = v_records_processed - v_records_failed;
-
-    -- Log the final outcome metrics for this validation batch
-    INSERT INTO statement_competitor_data_warehouse.bronze_validity_log (
-        log_id, execution_id, batch_id, validation_timestamp, records_processed, records_passed, records_quarantined, duration_seconds
+    -- Log start.
+    INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
     VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-        v_records_processed, v_records_passed, v_records_failed,
-        TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND)
+        'sp_validate_bronze_products', 'INFO_STAGE_START',
+        FORMAT('[1/2] VALIDATING bronze batch %s', v_batch_id)
     );
 
-  -- STREAMING_CHUNK: Handling exceptions and logging system errors...
-  EXCEPTION WHEN ERROR THEN
-    -- In the event of a system/SQL error, capture the system message and statement
-    SET v_error_msg = FORMAT(
-      'Message: %s | Statement: %s',
-      COALESCE(@@error.message, 'Unknown error occurred'),
-      COALESCE(@@error.statement_text, 'Unknown statement')
-    );
+    BEGIN
+        -- Remove earlier quarantine rows for this batch so re-runs do not duplicate them.
+        DELETE FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
+        WHERE batch_id = v_batch_id;
 
-    -- Log the detailed error to the bronze raw error logs
+        -- Quarantine rows that break a mandatory rule.
+        -- The price rule must match the Bronze filter in sp_load_silver_products.
+        INSERT INTO statement_competitor_data_warehouse.bronze_quarantine_bad_records (
+            quarantine_id, execution_id, batch_id, error_reason, quarantine_timestamp, raw_payload
+        )
+        SELECT
+            GENERATE_UUID(),
+            v_execution_id,
+            v_batch_id,
+            CASE
+                WHEN NULLIF(TRIM(raw_url), '') IS NULL THEN 'URL is null or empty'
+                WHEN SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL THEN 'Price not parseable'
+            END AS error_reason,
+            CURRENT_TIMESTAMP(),
+            TO_JSON_STRING(t)
+        FROM statement_competitor_data_warehouse.bronze_raw_products AS t
+        WHERE batch_id = v_batch_id
+          AND (NULLIF(TRIM(raw_url), '') IS NULL OR SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL);
+
+        -- Count processed, quarantined and passed rows.
+        SET v_records_processed = (
+            SELECT COUNT(*)
+            FROM statement_competitor_data_warehouse.bronze_raw_products
+            WHERE batch_id = v_batch_id
+        );
+
+        SET v_records_failed = (
+            SELECT COUNT(*)
+            FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
+            WHERE batch_id = v_batch_id
+        );
+
+        SET v_records_passed = v_records_processed - v_records_failed;
+
+        -- Record the batch result. sp_load_silver_products only loads batches listed here.
+        INSERT INTO statement_competitor_data_warehouse.bronze_validity_log (
+            log_id, execution_id, batch_id, validation_timestamp, records_processed, records_passed, records_quarantined, duration_seconds
+        )
+        VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            v_records_processed, v_records_passed, v_records_failed,
+            TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND)
+        );
+
+    EXCEPTION WHEN ERROR THEN
+        -- Capture the error.
+        SET v_error_msg = FORMAT(
+            'Message: %s | Statement: %s',
+            COALESCE(@@error.message, 'Unknown error occurred'),
+            COALESCE(@@error.statement_text, 'Unknown statement')
+        );
+
+        -- Log the error.
+        INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+        )
+        VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_validate_bronze_products', 'ERROR', v_error_msg
+        );
+
+        -- Re-raise so the caller sees the failure.
+        RAISE USING MESSAGE = FORMAT('sp_validate_bronze_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+    END;
+
+    -- Log completion.
     INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
         log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
-    ) VALUES (
+    )
+    VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-        'sp_validate_bronze_products', 'ERROR', v_error_msg
+        'sp_validate_bronze_products', 'INFO_STAGE_COMPLETE',
+        FORMAT('[2/2] COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
     );
-
-    -- Bubble the error up to the orchestrator (e.g., Python Cloud Function)
-    RAISE USING MESSAGE = FORMAT(
-      'sp_validate_bronze_products failed [Execution ID: %s]: %s',
-      v_execution_id,
-      v_error_msg
-    );
-  END;
-
-  -- STREAMING_CHUNK: Logging successful procedure completion...
-  -- Log successful completion of the entire procedure
-  INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
-    log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
-  )
-  VALUES (
-    GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-    'sp_validate_bronze_products', 'INFO_STAGE_COMPLETE',
-    FORMAT('[2/2] COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
-  );
 END;
 
--- STREAMING_CHUNK: Setting up the test environment with dummy data...
+
 /*
--- =============================================================================
--- TESTING BLOCK (Can be executed independently to verify logic)
---
--- WARNING: Commented out because it inserts mock rows (batch_id = 'TEST_BATCH_001')
--- into the production bronze_raw_products table, which then flow into Silver.
--- Only run manually against a test dataset.
--- =============================================================================
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- Validate the latest loaded batch.
+CALL statement_competitor_data_warehouse.sp_validate_bronze_products(NULL);
 
--- 1. Ensure the base raw table exists so we can insert mock data
-CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_products (
-    raw_shop_name STRING, raw_latitude STRING, raw_longitude STRING, raw_region STRING,
-    raw_city STRING, raw_category STRING, raw_title STRING, raw_price STRING,
-    raw_description STRING, raw_makers STRING, raw_primary_material STRING,
-    raw_era STRING, raw_condition STRING, raw_dimension STRING, raw_url STRING,
-    raw_available STRING, scrape_timestamp STRING,
-    batch_id STRING, ingested_at TIMESTAMP, execution_id STRING
-);
+-- Validation result per batch (processed = passed + quarantined).
+SELECT batch_id, validation_timestamp, records_processed, records_passed, records_quarantined
+FROM statement_competitor_data_warehouse.bronze_validity_log
+ORDER BY validation_timestamp DESC
+LIMIT 10;
 
--- 2. Insert test scenarios into the raw table
+-- Quarantine reasons for the latest validated batch.
+SELECT error_reason, COUNT(*) AS n, ANY_VALUE(raw_payload) AS example
+FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
+WHERE batch_id = (SELECT batch_id FROM statement_competitor_data_warehouse.bronze_validity_log ORDER BY validation_timestamp DESC LIMIT 1)
+GROUP BY error_reason;
+
+-- -----------------------------------------------------------------------------
+-- Rule test with mock data. Writes to production tables: run all three steps.
+-- -----------------------------------------------------------------------------
+-- Step 1: insert one passing and three failing rows.
 INSERT INTO statement_competitor_data_warehouse.bronze_raw_products
-(raw_shop_name, raw_title, raw_price, raw_url, raw_makers, batch_id, ingested_at)
+    (raw_shop_name, raw_title, raw_price, raw_url, raw_makers, batch_id, ingested_at)
 VALUES
--- Scenario A: Valid Record (Should pass)
-('Retro Club', 'Vintage MCM Chair', 'R 2,500.00', 'https://example.com/chair', 'Artecasa', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
+    ('Retro Club', 'Vintage MCM Chair', 'R 2,500.00', 'https://example.com/chair', 'Artecasa', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),     -- passes
+    ('Vintage Store', 'Antique Lamp', 'R 1200', NULL, 'Unknown', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),                                 -- missing URL
+    ('Cosmic Modern', 'Teak Sideboard', 'Contact for Price', 'https://example.com/sideboard', '', 'TEST_BATCH_001', CURRENT_TIMESTAMP()), -- unparseable price
+    ('Modern Living', 'Teak Coffee Table', '   ', '   ', '   ', 'TEST_BATCH_001', CURRENT_TIMESTAMP());                                 -- blank URL and price
 
--- Scenario B: Invalid Record - Null URL (Should fail)
-('Vintage Store', 'Antique Lamp', 'R 1200', NULL, 'Unknown', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
-
--- Scenario C: Invalid Record - Unparseable Price (Should fail)
-('Cosmic Modern', 'Teak Sideboard', 'Contact for Price', 'https://example.com/sideboard', '', 'TEST_BATCH_001', CURRENT_TIMESTAMP()),
-
--- Scenario D: Blank/Whitespace Values (Should be standardized to NULL and quarantined if mandatory field is blank)
-('Modern Living', 'Teak Coffee Table', '   ', 'https://example.com/coffeetable', '   ', 'TEST_BATCH_001', CURRENT_TIMESTAMP());
-
--- STREAMING_CHUNK: Executing the stored procedure and querying results...
--- 3. Execute the procedure for our test batch
+-- Step 2: validate and check (expect processed 4, passed 1, quarantined 3).
 CALL statement_competitor_data_warehouse.sp_validate_bronze_products('TEST_BATCH_001');
 
--- 4. Review the Validity Log
-SELECT 'VALIDITY LOG' as query_type, *
+SELECT records_processed, records_passed, records_quarantined
 FROM statement_competitor_data_warehouse.bronze_validity_log
-WHERE batch_id = 'TEST_BATCH_001'
-ORDER BY validation_timestamp DESC
-LIMIT 1;
+WHERE batch_id = 'TEST_BATCH_001';
 
--- 5. Review the Quarantined Records
-SELECT 'QUARANTINED RECORDS' as query_type, error_reason, raw_payload
+SELECT error_reason, raw_payload
 FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
 WHERE batch_id = 'TEST_BATCH_001';
 
--- 6. Review the System Error/Info Logs
-SELECT 'SYSTEM LOGS' as query_type, error_type, error_details, error_timestamp
-FROM statement_competitor_data_warehouse.bronze_raw_error_logs
-WHERE batch_id = 'TEST_BATCH_001'
-ORDER BY error_timestamp DESC;
+-- Step 3: remove all test rows (otherwise the Silver load picks up TEST_BATCH_001).
+DELETE FROM statement_competitor_data_warehouse.bronze_raw_products WHERE batch_id = 'TEST_BATCH_001';
+DELETE FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records WHERE batch_id = 'TEST_BATCH_001';
+DELETE FROM statement_competitor_data_warehouse.bronze_validity_log WHERE batch_id = 'TEST_BATCH_001';
+DELETE FROM statement_competitor_data_warehouse.bronze_raw_error_logs WHERE batch_id = 'TEST_BATCH_001';
 */

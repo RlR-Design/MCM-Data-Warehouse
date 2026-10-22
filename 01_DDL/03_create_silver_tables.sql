@@ -1,28 +1,25 @@
 /*
-=============================================================================
-SILVER LAYER DDL SCRIPT (BigQuery)
-Dataset: statement_competitor_data_warehouse
-
-Description:
-  This script creates the physical table structures for the Silver layer.
-  1. silver_transformed_products: Main cleansed, standardised, and typed dataset.
-  2. silver_error_logs: Traps procedural & runtime errors during Silver ETL.
-  3. silver_quarantine_bad_records: Captures malformed or invalid records.
-  4. silver_validity_log: Records audit & execution summary metrics.
-=============================================================================
-
-    NOTE:
-    All tables use CREATE TABLE IF NOT EXISTS, so re-running this script is safe and never deletes data.
-    Existing tables are left untouched, which also means column changes in this script are NOT applied to them.
-    To change an existing table, use ALTER TABLE (e.g. ADD COLUMN IF NOT EXISTS) instead of recreating it.
-=============================================================================
-
- */
+===============================================================================
+Script   : 03_create_silver_tables.sql
+Layer    : Silver
+Purpose  : Creates the Silver tables: cleaned products, star schema (dimensions
+           and fact), price history (SCD Type 2), and their log and quarantine
+           tables.
+When     : Initial setup, after 02_create_bronze_tables.sql. Safe to re-run.
+Warning  : Changes to columns here are not applied to existing tables.
+           Use ALTER TABLE ... ADD COLUMN IF NOT EXISTS instead.
+           Never DROP or CREATE OR REPLACE dim_price_history: its history
+           cannot be rebuilt.
+===============================================================================
+*/
 
 -- =============================================================================
--- 1. MAIN SILVER TRANSFORMED TABLE
--- Standardized data types applied (STRING, FLOAT64, NUMERIC, BOOL, DATETIME)
+-- 1. Cleaned products
 -- =============================================================================
+
+-- -----------------------------------------------------------------------------
+-- silver_transformed_products: cleaned, typed products (one row per URL)
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transformed_products (
     shop_name STRING OPTIONS(description="Name of the retail store or antique shop selling the product"),
     latitude FLOAT64 OPTIONS(description="Geographical latitude coordinate of shop location"),
@@ -49,10 +46,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transforme
 PARTITION BY DATE(ingested_at)
 CLUSTER BY shop_name, category, makers, primary_material;
 
--- =============================================================================
--- 2. SILVER ERROR LOGS TABLE
--- Matches Bronze error log structure for process failure auditing
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- silver_transformed_error_logs: events of the Silver load and validation
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transformed_error_logs (
     log_id STRING OPTIONS(description="Unique log identifier (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier"),
@@ -64,10 +60,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transforme
 )
 PARTITION BY DATE(error_timestamp);
 
--- =============================================================================
--- 3. SILVER QUARANTINE TABLE
--- Captures rows failing validation or type casting rules during Silver ETL
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- silver_quarantine_bad_records: rows failing Silver validation (as JSON)
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_quarantine_bad_records (
     quarantine_id STRING OPTIONS(description="Unique quarantine record identifier (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier"),
@@ -78,10 +73,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_quarantine
 )
 PARTITION BY DATE(quarantine_timestamp);
 
--- =============================================================================
--- 4. SILVER VALIDITY LOG TABLE
--- Logs row counts, execution duration, and validation health metrics
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- silver_validity_log: row counts per Silver validation run
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_validity_log (
     log_id STRING OPTIONS(description="Unique validation log identifier (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier"),
@@ -94,64 +88,14 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_validity_l
 )
 PARTITION BY DATE(validation_timestamp);
 
--- =============================================================================
--- 5. SHOP LOCATIONS REFERENCE TABLE
--- Known shop coordinates. sp_load_silver_products uses these instead of the
--- scraped latitude/longitude. One row per shop (matched case-insensitively).
--- =============================================================================
-CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.ref_shop_locations (
-    shop_name STRING NOT NULL OPTIONS(description="Shop name exactly as scraped (matched case-insensitively)"),
-    latitude FLOAT64 OPTIONS(description="Verified latitude of the shop"),
-    longitude FLOAT64 OPTIONS(description="Verified longitude of the shop"),
-    updated_at TIMESTAMP OPTIONS(description="When this location was last changed")
-);
-
--- Seed the known shops (only inserts shops that are not in the table yet,
--- so later corrections made in the table are never overwritten)
-MERGE statement_competitor_data_warehouse.ref_shop_locations AS target
-USING (
-    SELECT 'The Thrifty Duo' AS shop_name, -34.09381146 AS latitude, 18.84318164 AS longitude UNION ALL
-    SELECT 'The Retro Collection', -26.25018465, 28.11045514 UNION ALL
-    SELECT 'Vintageclub', -33.91460233218425, 18.48394626 UNION ALL
-    SELECT 'Retro MCM', -25.73971248, 28.2414414 UNION ALL
-    SELECT 'Huisraad', -33.89934459, 18.60473736 UNION ALL
-    SELECT 'Retrend', -26.14306559, 28.01834357 UNION ALL
-    SELECT 'Cosmic Modern', -33.89673833, 18.60654708 UNION ALL
-    SELECT 'Statement Collectables', -25.77693766, 28.2585483 UNION ALL
-    SELECT 'Amphora_Studio', -26.120134, 27.901464
-) AS source
-ON LOWER(target.shop_name) = LOWER(source.shop_name)
-WHEN NOT MATCHED THEN
-    INSERT (shop_name, latitude, longitude, updated_at)
-    VALUES (source.shop_name, source.latitude, source.longitude, CURRENT_TIMESTAMP());
 
 -- =============================================================================
--- VERIFICATION QUERY
--- Query BigQuery INFORMATION_SCHEMA to confirm all Silver tables are ready
+-- 2. Star schema
 -- =============================================================================
-SELECT
-    table_name,
-    table_type,
-    creation_time
-FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
-WHERE table_name LIKE 'silver_%'
-ORDER BY table_name;
 
-
--- STREAMING_CHUNK: Setting up DDL for Star Schema dimension tables...
-/*
-=============================================================================
-SILVER LAYER: NORMALISATION & STAR SCHEMA DDL
-Dataset: statement_competitor_data_warehouse
-
-Description:
-This script builds the dimension tables and the central normalised fact table
-(`fact_product_scrape`) according to the Star Schema ER Diagram.
-It also sets up the required error logging table for the normalisation process.
-=============================================================================
-*/
-
--- 1. Dimension Tables
+-- -----------------------------------------------------------------------------
+-- Dimensions: keys are FARM_FINGERPRINT hashes of the normalised value
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_shop (
     shop_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
     shop_name STRING,
@@ -176,8 +120,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_material (
     primary_material STRING
 );
 
--- STREAMING_CHUNK: Setting up DDL for the normalised target fact table and error logs...
--- 2. Normalised Target Table (Fact Table: fact_product_scrape representation)
+-- -----------------------------------------------------------------------------
+-- fact_product_scrape: one row per product with dimension keys
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.fact_product_scrape (
     product_id INT64 OPTIONS(description="Primary Key (Hash of URL)"),
     shop_id INT64 OPTIONS(description="Foreign Key to dim_shop"),
@@ -196,7 +141,9 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.fact_product_scra
 )
 CLUSTER BY shop_id, category_id, maker_id;
 
--- 3. Error Logging Table
+-- -----------------------------------------------------------------------------
+-- silver_normalised_error_logs: events of the normalisation procedure
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_normalised_error_logs (
     log_id STRING OPTIONS(description="Unique log UUID"),
     execution_id STRING,
@@ -208,69 +155,41 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_normalised
 )
 PARTITION BY DATE(error_timestamp);
 
-/*
-=============================================================================
-HISTORISATION TABLE DDL SCRIPT
-Dataset: statement_competitor_data_warehouse
-Table: dim_price_history
-=============================================================================
 
-DESCRIPTION:
-This DDL script creates the `dim_price_history` table and the `silver_historisation_error_logs` table within the statement_competitor_data_warehouse. This table is
-designed to track the historical state of a product's price and availability.
+-- =============================================================================
+-- 3. Price history (SCD Type 2)
+-- =============================================================================
 
-To capture this history effectively, it utilises a Type 2 Slowly Changing
-Dimension (SCD Type 2) format. Unlike a standard table that overwrites old
-data when an update occurs, an SCD Type 2 table inserts a brand new row for
-every change.
-
-=============================================================================
-NOTE - HISTORY CANNOT BE REBUILT:
-
-dim_price_history accumulates price/availability changes over time and cannot be
-regenerated from Silver. It is created with IF NOT EXISTS so re-running this
-script is safe. Never DROP or CREATE OR REPLACE this table in production.
-=============================================================================
-*/
-
--- STREAMING_CHUNK: Creating the primary dim_price_history table for SCD Type 2 tracking...
+-- -----------------------------------------------------------------------------
+-- dim_price_history: one row per price/availability version per product.
+-- Accumulates over time and cannot be rebuilt from Silver.
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_price_history (
-
-    -- ==========================================
-    -- Primary and Foreign Keys (From ERD)
-    -- ==========================================
+    -- Keys
     price_log_id INT64 OPTIONS(description="Primary Key (PK): Unique surrogate identifier for this specific price history log entry"),
     product_id INT64 OPTIONS(description="Foreign Key (FK): References the unique product_id in the fact_product_scrape table"),
 
-    -- ==========================================
-    -- Core Tracked Attributes (From ERD)
-    -- ==========================================
+    -- Tracked attributes
     scrape_timestamp TIMESTAMP OPTIONS(description="The original timestamp when this exact price and availability was scraped from the source"),
     price NUMERIC OPTIONS(description="The listed selling price of the item in ZAR at the time of the scrape (Mapped to DECIMAL)"),
     available BOOL OPTIONS(description="Boolean value checking if the item is still available (TRUE) or sold (FALSE)"),
 
-    -- ==========================================
-    -- SCD Type 2 Tracking Columns
-    -- ==========================================
+    -- SCD Type 2 columns
     valid_from TIMESTAMP OPTIONS(description="SCD Type 2: The exact timestamp from which this price/availability record became active"),
     valid_to TIMESTAMP OPTIONS(description="SCD Type 2: The timestamp when this record was superseded by a new change (9999-12-31 23:59:59 UTC if currently active)"),
     is_current BOOL OPTIONS(description="SCD Type 2: Boolean flag indicating if this is the most recent, active price record for the product"),
 
-    -- ==========================================
-    -- Standard Data Warehouse Audit Columns
-    -- ==========================================
+    -- Audit columns
     execution_id STRING OPTIONS(description="Generated UUID appended when the stored procedure runs for traceability"),
     batch_id STRING OPTIONS(description="Generated batch identifier for pipeline execution tracking"),
-    ingested_at DATETIME OPTIONS(description="Timestamp indicating when this specific row was inserted into the gold layer table")
-
+    ingested_at DATETIME OPTIONS(description="Timestamp indicating when this specific row was inserted into dim_price_history")
 )
 PARTITION BY DATE(valid_from)
 CLUSTER BY product_id, is_current;
 
--- STREAMING_CHUNK: Creating the silver_historisation_error_logs table for pipeline auditing...
--- =============================================================================
--- ERROR LOGGING TABLE (Silver Layer Pipeline Trapping)
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- silver_historisation_error_logs: events of the price history procedure
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_historisation_error_logs (
     log_id STRING OPTIONS(description="Unique identifier for the error log entry (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier linking to the stored procedure run"),
@@ -283,15 +202,13 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_historisat
 PARTITION BY DATE(error_timestamp);
 
 
-/*
-=============================================================================
-SILVER LAYER: RECONCILIATION & VALIDATION PROCEDURE
+-- =============================================================================
+-- 4. Reconciliation
+-- =============================================================================
 
-If anomalies are detected, they are logged into `silver_reconciled_error_logs`.
-=============================================================================
- */
-
- -- STREAMING_CHUNK: Creating the reconciliation error logs table for audit tracking...
+-- -----------------------------------------------------------------------------
+-- silver_reconciled_error_logs: failed checks and events of the reconciliation
+-- -----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_reconciled_error_logs (
     log_id STRING OPTIONS(description="Unique identifier for the log entry (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier linking to the stored procedure run"),
@@ -304,3 +221,21 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_reconciled
 PARTITION BY DATE(error_timestamp);
 
 
+/*
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- All Silver tables exist (expect 13 rows).
+SELECT table_name, creation_time
+FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
+WHERE table_type = 'BASE TABLE'
+  AND REGEXP_CONTAINS(table_name, r'^(silver_|dim_|fact_)')
+ORDER BY table_name;
+
+-- Partitioning and clustering are set on the main tables.
+SELECT table_name, column_name, is_partitioning_column, clustering_ordinal_position
+FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name IN ('silver_transformed_products', 'fact_product_scrape', 'dim_price_history')
+  AND (is_partitioning_column = 'YES' OR clustering_ordinal_position IS NOT NULL)
+ORDER BY table_name, clustering_ordinal_position;
+*/

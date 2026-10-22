@@ -1,60 +1,32 @@
 /*
-=============================================================================
-GOLD LAYER: PRODUCT LIFECYCLE (Events & Status)
-Dataset: statement_competitor_data_warehouse
-
-Description:
-Interprets the raw facts collected by the pipeline to work out what happened
-to each competitor product (listed, discounted, sold, delisted, relisted).
-
-Facts used:
-  - bronze_raw_products : which products appeared in each shop's scrape
-                          (every scrape is a full snapshot of that shop)
-  - dim_price_history   : every change in price and availability (SCD2)
-  - ref_shop_rules      : per-shop interpretation rules
-
-Objects:
-  1. ref_shop_rules         (table) Per-shop rules, e.g. "R0.00 means sold"
-  2. gold_product_presence  (view)  One row per product per scrape of its shop
-  3. gold_product_events    (view)  One row per thing that happened to a product
-  4. gold_product_status    (view)  One row per product with its current status
-  5. gold_products_flat     (view)  One row per product with all attributes + status (Data Studio source)
-
-The views hold no data and are always up to date. Re-running this script is safe:
-the rules table uses IF NOT EXISTS and the default rule is only inserted once.
-=============================================================================
+===============================================================================
+Script   : 06_create_gold_lifecycle_views.sql
+Layer    : Gold
+Purpose  : Works out what happened to each competitor product (listed,
+           discounted, sold, delisted, relisted) from the pipeline's raw facts:
+             bronze_raw_products  presence in each shop scrape (full snapshots)
+             dim_price_history    price and availability changes
+             ref_shop_rules       how each shop signals a sale
+           Creates, in dependency order:
+             gold_product_presence  one row per product per shop scrape
+             gold_product_events    one row per lifecycle event
+             gold_product_status    one row per product with current status
+             gold_products_flat     one row per product, all attributes (Data Studio source)
+When     : Initial setup, after 05_create_gold_views.sql.
+           Re-run after any change to this file. Safe to re-run.
+Warning  : Views hold no data. gold_product_presence scans all of Bronze; if it
+           becomes slow, materialise it as a table refreshed by a procedure.
+===============================================================================
 */
 
-
--- =============================================================================
--- 1. SHOP RULES (Reference Table)
--- One row per shop. The '*' row is the default for shops without their own row.
--- =============================================================================
-CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.ref_shop_rules (
-    shop_name STRING NOT NULL OPTIONS(description="Shop name exactly as scraped (case-insensitive), or '*' for the default rule"),
-    zero_price_means_sold BOOL OPTIONS(description="TRUE if the shop sets the price to R0.00 when an item has sold"),
-    delist_grace_scrapes INT64 OPTIONS(description="Consecutive shop scrapes a product must be missing from before it is treated as delisted"),
-    notes STRING OPTIONS(description="Free text describing how this shop behaves"),
-    updated_at TIMESTAMP OPTIONS(description="When this rule was last changed")
-);
-
--- Seed the default rule (only inserted if it does not exist yet)
-MERGE statement_competitor_data_warehouse.ref_shop_rules AS target
-USING (SELECT '*' AS shop_name) AS source
-ON target.shop_name = source.shop_name
-WHEN NOT MATCHED THEN
-    INSERT (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at)
-    VALUES ('*', TRUE, 2, 'Default rule for shops without their own row', CURRENT_TIMESTAMP());
-
-
--- =============================================================================
--- 2. PRODUCT PRESENCE
--- For every product, one row per scrape of its shop from the product's first
--- sighting onwards, with is_present showing whether the product was in it.
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- gold_product_presence: one row per product per scrape of its shop, from the
+-- product's first sighting onwards. is_present = product was in that scrape.
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_product_presence
 OPTIONS(description="One row per product per scrape of its shop (from first sighting), showing whether the product was present")
 AS
+-- Valid Bronze rows with parsed scrape time (test batches excluded)
 WITH bronze AS (
     SELECT
         TRIM(raw_shop_name) AS shop_name,
@@ -102,11 +74,13 @@ shop_scrapes AS (
         ROW_NUMBER() OVER (PARTITION BY shop_name ORDER BY scrape_time, ingested_at) AS scrape_seq
     FROM unique_shop_batches
 ),
+-- Products present in each shop scrape
 sightings AS (
     SELECT DISTINCT b.shop_name, b.url, s.scrape_seq
     FROM bronze b
     JOIN shop_scrapes s ON s.shop_name = b.shop_name AND s.batch_id = b.batch_id
 ),
+-- First scrape each product appeared in
 first_sighting AS (
     SELECT shop_name, url, MIN(scrape_seq) AS first_seq
     FROM sightings
@@ -130,26 +104,26 @@ LEFT JOIN sightings x
    AND x.scrape_seq = s.scrape_seq;
 
 
--- =============================================================================
--- 3. PRODUCT EVENTS
--- One row per thing that happened to a product:
---   NEW_LISTING        first time the product was scraped
---   MARKDOWN           price dropped but is still above zero
+-- -----------------------------------------------------------------------------
+-- gold_product_events: one row per lifecycle event
+--   NEW_LISTING        first scrape containing the product
+--   MARKDOWN           price dropped, still above zero
 --   PRICE_INCREASE     price went up
 --   SOLD_MARKED        site changed availability to sold
---   SOLD_ZERO_PRICE    price went to R0.00 at a shop where that means sold
---   PRICE_SET_TO_ZERO  price went to R0.00 at a shop where that does NOT mean sold
---   DELISTED           missing from delist_grace_scrapes consecutive scrapes of its shop
+--   SOLD_ZERO_PRICE    price set to R0.00 where the shop rule means sold
+--   PRICE_SET_TO_ZERO  price set to R0.00 where the shop rule does not mean sold
+--   DELISTED           missing from delist_grace_scrapes consecutive shop scrapes
 --   RELISTED           back after being delisted, marked sold or zero-priced
---   SCRAPE_GAP         missing from fewer scrapes than the grace period, then seen again
---                      (usually a scraper miss rather than a sale)
--- =============================================================================
+--   SCRAPE_GAP         missed fewer scrapes than the grace period, then seen again
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_product_events
 OPTIONS(description="One row per lifecycle event per product (listing, markdowns, sold signals, delisting, relisting)")
 AS
+-- Product presence per shop scrape
 WITH presence AS (
     SELECT * FROM statement_competitor_data_warehouse.gold_product_presence
 ),
+-- URL and shop per product
 product_shop AS (
     SELECT product_id, ANY_VALUE(url) AS url, ANY_VALUE(shop_name) AS shop_name
     FROM presence
@@ -175,6 +149,7 @@ runs AS (
     )
     GROUP BY product_id, url, shop_name, is_present, run_group
 ),
+-- Absence runs with the shop's grace period and the time the product reappeared
 absence_runs AS (
     SELECT
         r.*,
@@ -275,18 +250,18 @@ UNNEST([
 WHERE event_type IS NOT NULL;
 
 
--- =============================================================================
--- 4. PRODUCT STATUS
--- One row per product with its current inferred status:
+-- -----------------------------------------------------------------------------
+-- gold_product_status: one row per product with its current status
 --   ACTIVE             listed, not discounted
---   ACTIVE_DISCOUNTED  listed, current price below the first listed price
---   PENDING_DELIST     missing from the latest scrape(s) but not yet past the grace period
---   SOLD               delisted, marked sold, or zero-priced (see sold_reason)
--- sold_price is the last real (non-zero) price, so R0.00 never skews averages.
--- =============================================================================
+--   ACTIVE_DISCOUNTED  listed, below the first listed price
+--   PENDING_DELIST     missing from recent scrapes, within the grace period
+--   SOLD               delisted, marked sold or zero-priced (see sold_reason)
+-- sold_price is the last non-zero price, so R0.00 never skews averages.
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_product_status
 OPTIONS(description="One row per product with its current inferred status, sold date/price, markdowns and days on market")
 AS
+-- First/last seen and scrapes missed per product
 WITH presence_summary AS (
     SELECT
         product_id,
@@ -299,6 +274,7 @@ WITH presence_summary AS (
     FROM statement_competitor_data_warehouse.gold_product_presence
     GROUP BY product_id
 ),
+-- Current state and first/last non-zero price per product
 history_summary AS (
     SELECT
         product_id,
@@ -311,6 +287,7 @@ history_summary AS (
     FROM statement_competitor_data_warehouse.dim_price_history
     GROUP BY product_id
 ),
+-- Markdown count and latest sold signal per product
 event_summary AS (
     SELECT
         product_id,
@@ -319,6 +296,7 @@ event_summary AS (
     FROM statement_competitor_data_warehouse.gold_product_events
     GROUP BY product_id
 ),
+-- All inputs per product, with shop rules applied
 combined AS (
     SELECT
         p.product_id,
@@ -346,6 +324,7 @@ combined AS (
         ON first_missed.product_id = p.product_id
        AND first_missed.scrape_seq = p.last_present_seq + 1
 ),
+-- Sold signals as flags
 classified AS (
     SELECT
         *,
@@ -354,6 +333,7 @@ classified AS (
         COALESCE(current_price = 0 AND zero_price_means_sold, FALSE) AS is_zero_priced
     FROM combined
 ),
+-- Overall sold flag and sold time
 with_sold_at AS (
     SELECT
         *,
@@ -402,11 +382,10 @@ SELECT
 FROM with_sold_at;
 
 
--- =============================================================================
--- 5. FLAT REPORTING VIEW (One Big Table)
--- One row per product with all descriptive attributes, current price and
--- lifecycle status. Intended as the single data source for Google Data Studio.
--- =============================================================================
+-- -----------------------------------------------------------------------------
+-- gold_products_flat: one row per product with all attributes, current price
+-- and lifecycle status. Single data source for Google Data Studio.
+-- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_products_flat
 OPTIONS(description="One row per competitor product: shop, category, maker, material, current price and lifecycle status. Data Studio source.")
 AS
@@ -446,31 +425,50 @@ LEFT JOIN statement_competitor_data_warehouse.dim_material mat ON mat.material_i
 LEFT JOIN statement_competitor_data_warehouse.gold_product_status st ON st.product_id = f.product_id;
 
 
-/*
--- =============================================================================
--- EXAMPLE QUERIES
--- =============================================================================
 
--- Status overview per shop
+
+/*
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- All four lifecycle views exist (expect table_type = VIEW).
+SELECT table_name, table_type
+FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
+WHERE table_name IN ('gold_product_presence', 'gold_product_events', 'gold_product_status', 'gold_products_flat')
+ORDER BY table_name;
+
+-- One status row per product (expect no rows).
+SELECT product_id, COUNT(*) AS n
+FROM statement_competitor_data_warehouse.gold_product_status
+GROUP BY product_id
+HAVING COUNT(*) > 1;
+
+-- Status overview per shop.
 SELECT shop_name, status, COUNT(*) AS products, ROUND(AVG(sold_price), 2) AS avg_sold_price
 FROM statement_competitor_data_warehouse.gold_product_status
 GROUP BY shop_name, status
 ORDER BY shop_name, status;
 
--- Sold products with days on market and discount before sale
-SELECT
-    shop_name, url, sold_reason, sold_at, sold_price, first_listed_price, total_markdown_pct, days_on_market
+-- Event counts per type and shop. Many SCRAPE_GAP events suggest scraper issues.
+SELECT shop_name, event_type, COUNT(*) AS events
+FROM statement_competitor_data_warehouse.gold_product_events
+GROUP BY shop_name, event_type
+ORDER BY shop_name, event_type;
+
+-- Sold products with days on market and discount before sale.
+SELECT shop_name, url, sold_reason, sold_at, sold_price, first_listed_price, total_markdown_pct, days_on_market
 FROM statement_competitor_data_warehouse.gold_product_status
 WHERE status = 'SOLD'
 ORDER BY sold_at DESC;
 
--- Full history of one product
-SELECT * FROM statement_competitor_data_warehouse.gold_product_events
+-- Full event history of one product.
+SELECT event_type, event_time, price, previous_price, price_change_pct, detail
+FROM statement_competitor_data_warehouse.gold_product_events
 WHERE url = 'https://...'
 ORDER BY event_time;
 
--- Add a shop-specific rule (e.g. a shop where R0.00 means "price on request", not sold)
-INSERT INTO statement_competitor_data_warehouse.ref_shop_rules
-    (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at)
-VALUES ('Example Shop', FALSE, 2, 'Lists POA items at R0.00', CURRENT_TIMESTAMP());
+-- Flat view row count matches the fact table.
+SELECT
+    (SELECT COUNT(*) FROM statement_competitor_data_warehouse.gold_products_flat) AS flat_rows,
+    (SELECT COUNT(*) FROM statement_competitor_data_warehouse.fact_product_scrape) AS fact_rows;
 */

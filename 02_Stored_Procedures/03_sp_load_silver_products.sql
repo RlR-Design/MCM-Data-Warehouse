@@ -1,25 +1,21 @@
 /*
-=============================================================================
-SILVER LAYER: TRANSFORM & LOAD PROCEDURE
-This script defines the stored procedure to extract, clean, cast, and load data from the
-Bronze raw table into the Silver transformed table using an UPSERT (MERGE) operation,
-incorporating robust sanitisation against literal NULLs, NANs, NONEs, and empty values.
-=============================================================================
-
--- =============================================================================
--- STORED PROCEDURE: LOAD & TRANSFORM SILVER PRODUCTS
--- =============================================================================
+===============================================================================
+Script   : 03_sp_load_silver_products.sql
+Layer    : Silver
+Purpose  : Cleans and types one validated Bronze batch and merges it into
+           silver_transformed_products. Only new or changed products are
+           written. Bronze-quarantined rows are skipped. Missing shop names
+           and unparseable prices are left NULL for Silver validation.
+When     : Deploy at setup and after any change. Runs as step 3 of sp_run_pipeline.
+Requires : 02_sp_validate_bronze_products has validated the batch.
+           ref_shop_locations (04_create_reference_tables.sql).
+Params   : p_bronze_batch_id  Bronze batch to load. NULL = latest validated batch.
+Logs     : silver_transformed_error_logs
+Warning  : sp_reconciled_silver_products reads the Bronze batch id from the
+           completion log text. Keep the wording "for Bronze batch <id>.".
+===============================================================================
 */
 
-/*
-=============================================================================
-SILVER LAYER
-Data Transformation and Load Stored Procedure (sp_load_silver_products)
-=============================================================================
-*/
-
--- p_bronze_batch_id: the Bronze batch to load. Pass NULL to load the most recently
--- validated Bronze batch. The batch must have been run through sp_validate_bronze_products.
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_silver_products (IN p_bronze_batch_id STRING)
 OPTIONS(strict_mode=false)
 BEGIN
@@ -31,11 +27,12 @@ BEGIN
     DECLARE v_error_msg STRING;
     DECLARE v_error_type STRING;
 
+    -- Initialise run identifiers.
     SET start_time = CURRENT_TIMESTAMP();
     SET v_execution_id = GENERATE_UUID();
     SET v_batch_id = FORMAT_TIMESTAMP('BATCH_SLV_%Y%m%d_%H%M%S', start_time);
 
-    -- Resolve the Bronze batch: use the parameter, else the latest validated batch
+    -- Resolve the Bronze batch: the parameter, else the latest validated batch.
     SET v_bronze_batch_id = COALESCE(
         p_bronze_batch_id,
         (
@@ -46,6 +43,7 @@ BEGIN
         )
     );
 
+    -- Log start.
     INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
         log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
@@ -56,7 +54,7 @@ BEGIN
     );
 
     BEGIN
-        -- Guard: only load Bronze batches that have passed through Bronze validation
+        -- Stop unless the batch has been through Bronze validation.
         IF v_bronze_batch_id IS NULL OR NOT EXISTS (
             SELECT 1
             FROM statement_competitor_data_warehouse.bronze_validity_log
@@ -65,98 +63,96 @@ BEGIN
             RAISE USING MESSAGE = FORMAT('Bronze batch %s has not been validated. Run sp_validate_bronze_products first.', COALESCE(v_bronze_batch_id, 'NONE'));
         END IF;
 
+        -- Merge the cleaned batch into Silver.
         MERGE statement_competitor_data_warehouse.silver_transformed_products AS target
         USING (
+            -- Clean and type each Bronze column.
             WITH parsed_source AS (
                 SELECT
-                    /* Shop Name - Mandatory. Left NULL when missing so sp_validate_silver_products quarantines it. */
+                    -- Shop name: mandatory, NULL when missing (quarantined by validation).
                     CASE
                         WHEN raw_shop_name IS NULL OR TRIM(raw_shop_name) = '' OR UPPER(TRIM(raw_shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN NULL
                         ELSE TRIM(raw_shop_name)
                     END AS shop_name,
 
-                    /* Region */
+                    -- Region: 'Unknown' when missing.
                     CASE
                         WHEN raw_region IS NULL OR TRIM(raw_region) = '' OR UPPER(TRIM(raw_region)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN 'Unknown'
                         ELSE TRIM(raw_region)
                     END AS region,
 
-                    /* City */
+                    -- City: 'Unknown' when missing.
                     CASE
                         WHEN raw_city IS NULL OR TRIM(raw_city) = '' OR UPPER(TRIM(raw_city)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN 'Unknown'
                         ELSE TRIM(raw_city)
                     END AS city,
 
-                    /* Title */
+                    -- Title: 'Unknown' when missing.
                     CASE
                         WHEN raw_title IS NULL OR TRIM(raw_title) = '' OR UPPER(TRIM(raw_title)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN 'Unknown'
                         ELSE TRIM(raw_title)
                     END AS title,
 
-                    /* Description - String NULLs mapped to '-1' */
+                    -- Description: '-1' when missing.
                     CASE
                         WHEN raw_description IS NULL OR TRIM(raw_description) = '' OR UPPER(TRIM(raw_description)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_description)
                     END AS description,
 
-                    /* Dimensions - String NULLs mapped to '-1' */
+                    -- Dimensions: '-1' when missing.
                     CASE
                         WHEN raw_dimension IS NULL OR TRIM(raw_dimension) = '' OR UPPER(TRIM(raw_dimension)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_dimension)
                     END AS dimensions,
 
-                    /* URL */
+                    -- URL: natural key.
                     TRIM(raw_url) AS url,
 
-                    /* Category */
+                    -- Category: 'Uncategorised' when missing.
                     CASE
                         WHEN raw_category IS NULL OR TRIM(raw_category) = '' OR UPPER(TRIM(raw_category)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNCATEGORISED') THEN 'Uncategorised'
                         ELSE TRIM(raw_category)
                     END AS category,
 
-                    /* Makers - String NULLs mapped to '-1' */
+                    -- Makers: '-1' when missing.
                     CASE
                         WHEN raw_makers IS NULL OR TRIM(raw_makers) = '' OR UPPER(TRIM(raw_makers)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_makers)
                     END AS makers,
 
-                    /* Primary Material - String NULLs mapped to '-1' */
+                    -- Primary material: '-1' when missing.
                     CASE
                         WHEN raw_primary_material IS NULL OR TRIM(raw_primary_material) = '' OR UPPER(TRIM(raw_primary_material)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_primary_material)
                     END AS primary_material,
 
-                    /* Era - String NULLs mapped to '-1' */
+                    -- Era: '-1' when missing.
                     CASE
                         WHEN raw_era IS NULL OR TRIM(raw_era) = '' OR UPPER(TRIM(raw_era)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_era)
                     END AS era,
 
-                    /* Condition - String NULLs mapped to '-1' */
+                    -- Condition: '-1' when missing.
                     CASE
                         WHEN raw_condition IS NULL OR TRIM(raw_condition) = '' OR UPPER(TRIM(raw_condition)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN '-1'
                         ELSE TRIM(raw_condition)
                     END AS condition,
 
-                    /* Latitude - NULL when missing, unparseable, NaN or outside -90..90.
-                       (NULL rather than -1.0, which is a real coordinate.) */
+                    -- Latitude: NULL when missing, unparseable, NaN or outside -90..90.
                     IF(
                         SAFE_CAST(TRIM(raw_latitude) AS FLOAT64) BETWEEN -90.0 AND 90.0,
                         SAFE_CAST(TRIM(raw_latitude) AS FLOAT64),
                         NULL
                     ) AS latitude,
 
-                    /* Longitude - NULL when missing, unparseable, NaN or outside -180..180 */
+                    -- Longitude: NULL when missing, unparseable, NaN or outside -180..180.
                     IF(
                         SAFE_CAST(TRIM(raw_longitude) AS FLOAT64) BETWEEN -180.0 AND 180.0,
                         SAFE_CAST(TRIM(raw_longitude) AS FLOAT64),
                         NULL
                     ) AS longitude,
 
-                    /* Price - Explicitly cleaned and rounded to exactly 2 decimal places.
-                       Left NULL if unparseable (not 0.00) so Silver validation quarantines it.
-                       Keeps the minus sign (same regex as sp_validate_bronze_products) so negative
-                       prices stay negative and are quarantined by Silver validation. */
+                    -- Price: digits, '.' and '-' kept, rounded to 2 decimals. NULL when unparseable.
                     ROUND(
                         SAFE_CAST(
                             REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.-]', '') AS NUMERIC
@@ -164,17 +160,14 @@ BEGIN
                         2
                     ) AS price,
 
-                    /* Available - Maps common scraper values to TRUE/FALSE.
-                       Unrecognised or missing values become NULL (unknown) rather than FALSE,
-                       so they are not mistaken for sold items. */
+                    -- Available: common TRUE/FALSE spellings. NULL (unknown) otherwise, never assumed sold.
                     CASE
                         WHEN UPPER(TRIM(raw_available)) IN ('TRUE', 'T', 'YES', 'Y', '1', '1.0', 'AVAILABLE', 'IN STOCK', 'INSTOCK', 'IN_STOCK', 'FOR SALE') THEN TRUE
                         WHEN UPPER(TRIM(raw_available)) IN ('FALSE', 'F', 'NO', 'N', '0', '0.0', 'SOLD', 'SOLD OUT', 'SOLDOUT', 'SOLD_OUT', 'OUT OF STOCK', 'OUTOFSTOCK', 'OUT_OF_STOCK', 'UNAVAILABLE', 'NOT AVAILABLE') THEN FALSE
                         ELSE NULL
                     END AS available,
 
-                    /* Parsed Timestamp - Left NULL if unparseable rather than inventing a
-                       scrape time. NULLs sort last in the latest-per-URL dedup below. */
+                    -- Scrape time: NULL when unparseable, never replaced with the run time.
                     COALESCE(
                         SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%E*S', TRIM(scrape_timestamp)),
                         SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', TRIM(scrape_timestamp)),
@@ -187,12 +180,10 @@ BEGIN
                   AND raw_url IS NOT NULL
                   AND TRIM(raw_url) != ''
                   AND UPPER(TRIM(raw_url)) NOT IN ('NULL', 'NONE', 'NAN', 'N/A', '-')
-                  -- Exclude records quarantined by Bronze validation.
-                  -- Must stay in sync with the price rule in sp_validate_bronze_products.
+                  -- Skip Bronze-quarantined rows (same price rule as sp_validate_bronze_products).
                   AND SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NOT NULL
             ),
-            -- Reference coordinates for known shops (override scraped latitude/longitude).
-            -- Maintained in ref_shop_locations (see 01_DDL/02_silver_ddl.sql).
+            -- Verified shop coordinates.
             shop_lookup AS (
                 SELECT
                     TRIM(shop_name) AS lookup_shop,
@@ -200,6 +191,7 @@ BEGIN
                     longitude AS lookup_lon
                 FROM statement_competitor_data_warehouse.ref_shop_locations
             )
+            -- Apply verified coordinates and keep the latest row per URL.
             SELECT
                 p.shop_name,
                 COALESCE(l.lookup_lat, p.latitude) AS latitude,
@@ -225,8 +217,7 @@ BEGIN
         ) AS source
         ON target.url = source.url
 
-        -- Only rewrite rows whose data actually changed; unchanged rows keep their
-        -- original batch_id / ingested_at. Scrape timestamps alone do not count as a change.
+        -- Update only when product data changed (a new scrape time alone is not a change).
         WHEN MATCHED AND (
                target.shop_name IS DISTINCT FROM source.shop_name
             OR target.latitude IS DISTINCT FROM source.latitude
@@ -266,6 +257,7 @@ BEGIN
                 batch_id = v_batch_id,
                 ingested_at = CAST(CURRENT_TIMESTAMP() AS DATETIME)
 
+        -- Insert new products.
         WHEN NOT MATCHED THEN
             INSERT (
                 shop_name, latitude, longitude, region, city, category,
@@ -286,6 +278,7 @@ BEGIN
         SET v_rows_merged = @@row_count;
 
     EXCEPTION WHEN ERROR THEN
+        -- Capture and classify the error.
         SET v_error_msg = FORMAT('Message: %s | Statement: %s', @@error.message, @@error.statement_text);
 
         SET v_error_type = CASE
@@ -294,6 +287,7 @@ BEGIN
             ELSE 'TRANSFORMATION_FAILURE'
         END;
 
+        -- Log the error.
         INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
             log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
         )
@@ -302,34 +296,56 @@ BEGIN
             'sp_load_silver_products', v_error_type, v_error_msg
         );
 
+        -- Re-raise so the caller sees the failure.
         RAISE USING MESSAGE = FORMAT('sp_load_silver_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
     END;
 
+    -- Log completion. Wording is parsed by sp_reconciled_silver_products.
     INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
         log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
     VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
         'sp_load_silver_products', 'INFO_STAGE_COMPLETE',
-        -- sp_reconciled_silver_products reads the Bronze batch id from this text ("for Bronze batch <id>.")
         FORMAT('Transformation COMPLETED for Bronze batch %s. Rows inserted or changed: %d in %d seconds',
                v_bronze_batch_id, v_rows_merged, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
     );
-
 END;
 
--- =============================================================================
--- INVOCATION & VERIFICATION
--- =============================================================================
 
--- Execute the Silver transformation stored procedure
--- Pass NULL to load the latest validated Bronze batch, or a specific batch_id
--- CALL statement_competitor_data_warehouse.sp_load_silver_products(NULL);
-
--- Verify transformed records
 /*
-SELECT
-    COUNT(*) AS total_silver_records,
-    COUNT(DISTINCT url) AS unique_urls
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- Load the latest validated Bronze batch.
+CALL statement_competitor_data_warehouse.sp_load_silver_products(NULL);
+
+-- Load a specific Bronze batch.
+CALL statement_competitor_data_warehouse.sp_load_silver_products('BATCH_YYYYMMDD_HHMMSS');
+
+-- Latest load result (Bronze batch and rows inserted or changed).
+SELECT error_timestamp, error_type, error_details
+FROM statement_competitor_data_warehouse.silver_transformed_error_logs
+WHERE scraper_job_id = 'sp_load_silver_products'
+ORDER BY error_timestamp DESC
+LIMIT 5;
+
+-- One row per URL (expect total_rows = unique_urls).
+SELECT COUNT(*) AS total_rows, COUNT(DISTINCT url) AS unique_urls
 FROM statement_competitor_data_warehouse.silver_transformed_products;
+
+-- Rows awaiting Silver validation (missing shop or price).
+SELECT COUNTIF(shop_name IS NULL) AS missing_shop, COUNTIF(price IS NULL) AS missing_price
+FROM statement_competitor_data_warehouse.silver_transformed_products;
+
+-- Unknown availability values (add new spellings to the CASE above).
+SELECT url, title
+FROM statement_competitor_data_warehouse.silver_transformed_products
+WHERE available IS NULL;
+
+-- Known shops use verified coordinates (expect no rows).
+SELECT s.shop_name, s.latitude, r.latitude AS ref_latitude
+FROM statement_competitor_data_warehouse.silver_transformed_products s
+JOIN statement_competitor_data_warehouse.ref_shop_locations r ON LOWER(r.shop_name) = LOWER(s.shop_name)
+WHERE s.latitude IS DISTINCT FROM r.latitude;
 */

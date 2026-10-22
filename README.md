@@ -28,3 +28,48 @@ Independent furniture dealers in South Africa frequently set retail prices based
 * **Vintage Furniture Business Owners & Restorers (omitted):** Require data-driven pricing models to optimise acquisition budgets, set competitive listing prices, and evaluate stock performance.  
 * **E-commerce & Brand Strategists:** Require granular market intelligence to optimise product cataloguing, search keyword strategies, and collection structures across digital storefronts.
 
+
+## **6\. How to Run**
+
+All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. Each script starts with a header (purpose, when to run, requirements, warnings) and ends with commented-out tests.
+
+### Setup (once, in order)
+
+| Step | Script | Creates |
+|---|---|---|
+| 1 | `01_DDL/01_create_dataset.sql` | Dataset |
+| 2 | `01_DDL/02_create_bronze_tables.sql` | Bronze tables |
+| 3 | `01_DDL/03_create_silver_tables.sql` | Silver tables, star schema, price history |
+| 4 | `01_DDL/04_create_reference_tables.sql` | `ref_shop_locations`, `ref_shop_rules` |
+| 5 | `01_DDL/05_create_gold_views.sql` | Gold star schema views |
+| 6 | `01_DDL/06_create_gold_lifecycle_views.sql` | Gold lifecycle and reporting views |
+| 7 | `02_Stored_Procedures/01` to `08` | Stored procedures |
+
+DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
+
+### Pipeline (per scraped CSV)
+
+```sql
+CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://<bucket>/<file>.csv');
+```
+
+`sp_run_pipeline` runs these steps in order and stops at the first failure:
+
+| Step | Procedure | Does |
+|---|---|---|
+| 1 | `sp_load_bronze_products` | Appends the CSV to Bronze as a new batch |
+| 2 | `sp_validate_bronze_products` | Quarantines rows without a URL or parseable price |
+| 3 | `sp_load_silver_products` | Cleans the batch and merges new or changed products into Silver |
+| 4 | `sp_validate_silver_products` | Quarantines rows without a shop name or valid price |
+| 5 | `sp_normalise_silver_products` | Rebuilds dimensions and the fact table |
+| 6 | `sp_load_dim_price_history` | Records price and availability changes (SCD Type 2) |
+| 7 | `sp_reconciled_silver_products` | Runs integrity checks and logs any issues |
+
+Gold objects are views and need no load step. `gold_products_flat` is the Data Studio source.
+
+### Reference data
+
+Maintained by hand, no redeploy needed:
+
+- `ref_shop_locations`: verified shop coordinates.
+- `ref_shop_rules`: how each shop signals a sale (zero price, delisting grace period). The `'*'` row is the default.

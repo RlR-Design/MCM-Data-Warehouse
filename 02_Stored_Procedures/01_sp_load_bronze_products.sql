@@ -1,231 +1,207 @@
--- STREAMING_CHUNK: Declaring procedure variables and initialising execution tracking...
--- =============================================================================
--- BRONZE LAYER BULK INGESTION STORED PROCEDURE
--- Loads raw product data from Cloud Storage CSV into BigQuery bronze table
--- Includes live progress monitoring indicators and timestamped status logs
--- =============================================================================
+/*
+===============================================================================
+Script   : 01_sp_load_bronze_products.sql
+Layer    : Bronze
+Purpose  : Loads a scraped CSV from Cloud Storage and appends it unchanged to
+           bronze_raw_products as a new batch.
+When     : Deploy at setup and after any change. Runs as step 1 of sp_run_pipeline.
+Requires : 02_create_bronze_tables.sql
+Params   : p_gcs_uri  CSV location. NULL = gs://statement_competitor_data_warehouse/MCM_All_products.csv
+Logs     : bronze_raw_error_logs
+Warning  : Every CALL appends the whole file. Calling twice with the same file
+           loads it twice.
+===============================================================================
+*/
 
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_bronze_products (IN p_gcs_uri STRING)
 BEGIN
-  -- Local variables for execution auditing and duration tracking
-  DECLARE evaluated_uri STRING;
-  DECLARE start_time TIMESTAMP;
-  DECLARE v_execution_id STRING;
-  DECLARE v_batch_id STRING;
-  DECLARE v_error_msg STRING;
-  DECLARE v_error_type STRING;
+    DECLARE evaluated_uri STRING;
+    DECLARE start_time TIMESTAMP;
+    DECLARE v_execution_id STRING;
+    DECLARE v_batch_id STRING;
+    DECLARE v_error_msg STRING;
+    DECLARE v_error_type STRING;
 
-  SET start_time = CURRENT_TIMESTAMP();
-  SET v_execution_id = GENERATE_UUID();
-  SET v_batch_id = FORMAT_TIMESTAMP('BATCH_%Y%m%d_%H%M%S', start_time);
-  SET evaluated_uri = COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv');
+    -- Initialise run identifiers and resolve the file location.
+    SET start_time = CURRENT_TIMESTAMP();
+    SET v_execution_id = GENERATE_UUID();
+    SET v_batch_id = FORMAT_TIMESTAMP('BATCH_%Y%m%d_%H%M%S', start_time);
+    SET evaluated_uri = COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv');
 
-  -- STREAMING_CHUNK: Logging ingestion initialization status to audit logs...
-  -- Audit Progress Step 1 & 2 (Logged to audit table to prevent JDBC multi-result set timeouts)
-  INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
-    log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
-  )
-  VALUES (
-    GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-    'sp_load_bronze_products', 'INFO_STAGE_START', FORMAT('[1/3 & 2/3] INITIALISING & LOADING from %s', evaluated_uri)
-  );
-
-  -- STREAMING_CHUNK: Defining bronze target table and session temporary table...
-  BEGIN
-    -- Ensure target bronze raw products table exists before appending
-    CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_raw_products (
-      raw_shop_name STRING,
-      raw_latitude STRING,
-      raw_longitude STRING,
-      raw_region STRING,
-      raw_city STRING,
-      raw_category STRING,
-      raw_title STRING,
-      raw_price STRING,
-      raw_description STRING,
-      raw_makers STRING,
-      raw_primary_material STRING,
-      raw_era STRING,
-      raw_condition STRING,
-      raw_dimension STRING,
-      raw_url STRING,
-      raw_available STRING,
-      scrape_timestamp STRING,
-      execution_id STRING,
-      batch_id STRING,
-      ingested_at TIMESTAMP
-    );
-
-    -- Ensure audit metadata columns exist on pre-existing raw products table
-    ALTER TABLE statement_competitor_data_warehouse.bronze_raw_products
-      ADD COLUMN IF NOT EXISTS execution_id STRING,
-      ADD COLUMN IF NOT EXISTS batch_id STRING,
-      ADD COLUMN IF NOT EXISTS ingested_at TIMESTAMP;
-
-    -- Statement 1: Create session temp table for raw stage
-    CREATE OR REPLACE TEMP TABLE stg_bronze_raw_products (
-      raw_shop_name STRING,
-      raw_latitude STRING,
-      raw_longitude STRING,
-      raw_region STRING,
-      raw_city STRING,
-      raw_category STRING,
-      raw_title STRING,
-      raw_price STRING,
-      raw_description STRING,
-      raw_makers STRING,
-      raw_primary_material STRING,
-      raw_era STRING,
-      raw_condition STRING,
-      raw_dimension STRING,
-      raw_url STRING,
-      raw_available STRING,
-      scrape_timestamp STRING
-    );
-
-    -- STREAMING_CHUNK: Executing dynamic LOAD DATA into temporary staging table...
-    -- Statement 2: Execute dynamic LOAD DATA using triple quotes format specifiers to avoid internal string quote escaping issues
-    EXECUTE IMMEDIATE FORMAT("""
-      LOAD DATA OVERWRITE TEMP TABLE stg_bronze_raw_products (
-        raw_shop_name STRING, raw_latitude STRING, raw_longitude STRING, raw_region STRING,
-        raw_city STRING, raw_category STRING, raw_title STRING, raw_price STRING,
-        raw_description STRING, raw_makers STRING, raw_primary_material STRING,
-        raw_era STRING, raw_condition STRING, raw_dimension STRING, raw_url STRING,
-        raw_available STRING, scrape_timestamp STRING
-      )
-      FROM FILES (
-        format = 'CSV',
-        uris = [%T],
-        skip_leading_rows = 1,
-        field_delimiter = ',',
-        quote = '"',
-        allow_quoted_newlines = true
-      )
-    """, evaluated_uri);
-
-    -- STREAMING_CHUNK: Appending staged records into persistent bronze table...
-    -- Statement 3: Append staged data with explicit column mapping and audit metadata to persistent bronze table
-    INSERT INTO statement_competitor_data_warehouse.bronze_raw_products (
-      raw_shop_name,
-      raw_latitude,
-      raw_longitude,
-      raw_region,
-      raw_city,
-      raw_category,
-      raw_title,
-      raw_price,
-      raw_description,
-      raw_makers,
-      raw_primary_material,
-      raw_era,
-      raw_condition,
-      raw_dimension,
-      raw_url,
-      raw_available,
-      scrape_timestamp,
-      execution_id,
-      batch_id,
-      ingested_at
-    )
-    SELECT
-      raw_shop_name,
-      raw_latitude,
-      raw_longitude,
-      raw_region,
-      raw_city,
-      raw_category,
-      raw_title,
-      raw_price,
-      raw_description,
-      raw_makers,
-      raw_primary_material,
-      raw_era,
-      raw_condition,
-      raw_dimension,
-      raw_url,
-      raw_available,
-      scrape_timestamp,
-      v_execution_id AS execution_id,
-      v_batch_id AS batch_id,
-      CURRENT_TIMESTAMP() AS ingested_at
-    FROM stg_bronze_raw_products;
-
-  -- STREAMING_CHUNK: Catching execution failures and logging error details...
-  EXCEPTION WHEN ERROR THEN
-    -- Capture system error message and map category into local variables
-    -- Wrapped in COALESCE to prevent NULL exceptions during compilation errors
-    SET v_error_msg = FORMAT(
-      'Message: %s | Statement: %s',
-      COALESCE(@@error.message, 'Unknown error occurred'),
-      COALESCE(@@error.statement_text, 'Unknown statement')
-    );
-
-    SET v_error_type = CASE
-      WHEN LOWER(v_error_msg) LIKE '%schema%' OR LOWER(v_error_msg) LIKE '%type%' OR LOWER(v_error_msg) LIKE '%column%' OR LOWER(v_error_msg) LIKE '%mismatch%' THEN 'SCHEMA_MISMATCH'
-      WHEN LOWER(v_error_msg) LIKE '%parse%' OR LOWER(v_error_msg) LIKE '%delimiter%' OR LOWER(v_error_msg) LIKE '%corrupt%' OR LOWER(v_error_msg) LIKE '%format%' THEN 'PARSING_FAILURE'
-      WHEN LOWER(v_error_msg) LIKE '%access%' OR LOWER(v_error_msg) LIKE '%permission%' OR LOWER(v_error_msg) LIKE '%denied%' OR LOWER(v_error_msg) LIKE '%not found%' OR LOWER(v_error_msg) LIKE '%forbidden%' THEN 'ACCESS_DENIED'
-      ELSE 'BULK_LOAD_FAILURE'
-    END;
-
+    -- Log start.
     INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
-      log_id,
-      execution_id,
-      batch_id,
-      error_timestamp,
-      scraper_job_id,
-      error_type,
-      error_details
+        log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
     VALUES (
-      GENERATE_UUID(),
-      v_execution_id,
-      v_batch_id,
-      CURRENT_TIMESTAMP(),
-      'sp_load_bronze_products',
-      v_error_type,
-      v_error_msg
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_load_bronze_products', 'INFO_STAGE_START', FORMAT('[1/3 & 2/3] INITIALISING & LOADING from %s', evaluated_uri)
     );
 
-    -- Re-raise error to signal execution failure to the runner
-    RAISE USING MESSAGE = FORMAT('sp_load_bronze_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
-  END;
+    BEGIN
+        -- Create a session staging table matching the CSV columns.
+        CREATE OR REPLACE TEMP TABLE stg_bronze_raw_products (
+            raw_shop_name STRING,
+            raw_latitude STRING,
+            raw_longitude STRING,
+            raw_region STRING,
+            raw_city STRING,
+            raw_category STRING,
+            raw_title STRING,
+            raw_price STRING,
+            raw_description STRING,
+            raw_makers STRING,
+            raw_primary_material STRING,
+            raw_era STRING,
+            raw_condition STRING,
+            raw_dimension STRING,
+            raw_url STRING,
+            raw_available STRING,
+            scrape_timestamp STRING
+        );
 
-  -- STREAMING_CHUNK: Recording completion metrics and execution duration...
-  -- Audit Progress Step 3 (Logged to audit table)
-  INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
-    log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
-  )
-  VALUES (
-    GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
-    'sp_load_bronze_products', 'INFO_STAGE_COMPLETE', FORMAT('[3/3] COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
-  );
+        -- Load the CSV into the staging table (dynamic SQL: the URI is a parameter).
+        EXECUTE IMMEDIATE FORMAT("""
+            LOAD DATA OVERWRITE TEMP TABLE stg_bronze_raw_products (
+                raw_shop_name STRING, raw_latitude STRING, raw_longitude STRING, raw_region STRING,
+                raw_city STRING, raw_category STRING, raw_title STRING, raw_price STRING,
+                raw_description STRING, raw_makers STRING, raw_primary_material STRING,
+                raw_era STRING, raw_condition STRING, raw_dimension STRING, raw_url STRING,
+                raw_available STRING, scrape_timestamp STRING
+            )
+            FROM FILES (
+                format = 'CSV',
+                uris = [%T],
+                skip_leading_rows = 1,
+                field_delimiter = ',',
+                quote = '"',
+                allow_quoted_newlines = true
+            )
+        """, evaluated_uri);
 
+        -- Append the staged rows to Bronze with audit columns.
+        INSERT INTO statement_competitor_data_warehouse.bronze_raw_products (
+            raw_shop_name,
+            raw_latitude,
+            raw_longitude,
+            raw_region,
+            raw_city,
+            raw_category,
+            raw_title,
+            raw_price,
+            raw_description,
+            raw_makers,
+            raw_primary_material,
+            raw_era,
+            raw_condition,
+            raw_dimension,
+            raw_url,
+            raw_available,
+            scrape_timestamp,
+            execution_id,
+            batch_id,
+            ingested_at
+        )
+        SELECT
+            raw_shop_name,
+            raw_latitude,
+            raw_longitude,
+            raw_region,
+            raw_city,
+            raw_category,
+            raw_title,
+            raw_price,
+            raw_description,
+            raw_makers,
+            raw_primary_material,
+            raw_era,
+            raw_condition,
+            raw_dimension,
+            raw_url,
+            raw_available,
+            scrape_timestamp,
+            v_execution_id AS execution_id,
+            v_batch_id AS batch_id,
+            CURRENT_TIMESTAMP() AS ingested_at
+        FROM stg_bronze_raw_products;
+
+    EXCEPTION WHEN ERROR THEN
+        -- Capture and classify the error.
+        SET v_error_msg = FORMAT(
+            'Message: %s | Statement: %s',
+            COALESCE(@@error.message, 'Unknown error occurred'),
+            COALESCE(@@error.statement_text, 'Unknown statement')
+        );
+
+        SET v_error_type = CASE
+            WHEN LOWER(v_error_msg) LIKE '%schema%' OR LOWER(v_error_msg) LIKE '%type%' OR LOWER(v_error_msg) LIKE '%column%' OR LOWER(v_error_msg) LIKE '%mismatch%' THEN 'SCHEMA_MISMATCH'
+            WHEN LOWER(v_error_msg) LIKE '%parse%' OR LOWER(v_error_msg) LIKE '%delimiter%' OR LOWER(v_error_msg) LIKE '%corrupt%' OR LOWER(v_error_msg) LIKE '%format%' THEN 'PARSING_FAILURE'
+            WHEN LOWER(v_error_msg) LIKE '%access%' OR LOWER(v_error_msg) LIKE '%permission%' OR LOWER(v_error_msg) LIKE '%denied%' OR LOWER(v_error_msg) LIKE '%not found%' OR LOWER(v_error_msg) LIKE '%forbidden%' THEN 'ACCESS_DENIED'
+            ELSE 'BULK_LOAD_FAILURE'
+        END;
+
+        -- Log the error.
+        INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
+            log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+        )
+        VALUES (
+            GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+            'sp_load_bronze_products', v_error_type, v_error_msg
+        );
+
+        -- Re-raise so the caller sees the failure.
+        RAISE USING MESSAGE = FORMAT('sp_load_bronze_products failed [Execution ID: %s]: %s', v_execution_id, v_error_msg);
+    END;
+
+    -- Log completion.
+    INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
+        log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+    )
+    VALUES (
+        GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+        'sp_load_bronze_products', 'INFO_STAGE_COMPLETE', FORMAT('[3/3] COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
+    );
 END;
 
 
--- STREAMING_CHUNK: Invoking procedure and verifying ingested records...
 /*
--- =============================================================================
--- INVOCATION & VERIFICATION
---
--- WARNING: Commented out so that re-running this file to update the procedure
--- does not re-load the CSV. Each CALL appends the full file to bronze_raw_products.
--- Run the CALL manually only when a new scrape file should be ingested.
--- =============================================================================
-
--- Execute stored procedure with default GCS path
+===============================================================================
+Tests (run manually)
+===============================================================================
+-- Load the default CSV. Appends the whole file as a new batch.
 CALL statement_competitor_data_warehouse.sp_load_bronze_products(NULL);
 
--- Verify record counts and recent batch status post ingestion
-SELECT
-  COUNT(*) AS total_raw_records,
-  COUNT(DISTINCT raw_url) AS unique_urls,
-  MAX(scrape_timestamp) AS latest_scrape_timestamp
-FROM statement_competitor_data_warehouse.bronze_raw_products;
+-- Load a specific CSV.
+CALL statement_competitor_data_warehouse.sp_load_bronze_products('gs://statement_competitor_data_warehouse/<file>.csv');
 
--- Review recent execution logs and captured errors
-SELECT *
+-- Rows per batch. Batches with equal counts loaded close together may be duplicate loads.
+SELECT batch_id, MIN(ingested_at) AS loaded_at, COUNT(*) AS row_count, COUNT(DISTINCT raw_url) AS unique_urls
+FROM statement_competitor_data_warehouse.bronze_raw_products
+GROUP BY batch_id
+ORDER BY loaded_at DESC;
+
+-- Latest run logged INFO_STAGE_START and INFO_STAGE_COMPLETE (no error rows).
+SELECT error_timestamp, error_type, error_details
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
+WHERE scraper_job_id = 'sp_load_bronze_products'
 ORDER BY error_timestamp DESC
 LIMIT 10;
+
+-- Price formats in Bronze (digits shown as 9).
+SELECT REGEXP_REPLACE(raw_price, r'[0-9]', '9') AS price_pattern, COUNT(*) AS n, ANY_VALUE(raw_price) AS example
+FROM statement_competitor_data_warehouse.bronze_raw_products
+GROUP BY price_pattern
+ORDER BY n DESC
+LIMIT 30;
+
+-- Availability values in Bronze.
+SELECT raw_available, COUNT(*) AS n
+FROM statement_competitor_data_warehouse.bronze_raw_products
+GROUP BY raw_available
+ORDER BY n DESC;
+
+-- Scrape timestamp formats in Bronze (digits shown as 9).
+SELECT REGEXP_REPLACE(scrape_timestamp, r'[0-9]', '9') AS ts_pattern, COUNT(*) AS n, ANY_VALUE(scrape_timestamp) AS example
+FROM statement_competitor_data_warehouse.bronze_raw_products
+GROUP BY ts_pattern
+ORDER BY n DESC;
 */
