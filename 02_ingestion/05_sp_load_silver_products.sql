@@ -27,6 +27,7 @@ BEGIN
     DECLARE v_execution_id STRING;
     DECLARE v_batch_id STRING;
     DECLARE v_bronze_batch_id STRING;
+    DECLARE v_rows_merged INT64 DEFAULT 0;
     DECLARE v_error_msg STRING;
     DECLARE v_error_type STRING;
 
@@ -68,9 +69,9 @@ BEGIN
         USING (
             WITH parsed_source AS (
                 SELECT
-                    /* Shop Name */
+                    /* Shop Name - Mandatory. Left NULL when missing so sp_validate_silver_products quarantines it. */
                     CASE
-                        WHEN raw_shop_name IS NULL OR TRIM(raw_shop_name) = '' OR UPPER(TRIM(raw_shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN 'Unknown'
+                        WHEN raw_shop_name IS NULL OR TRIM(raw_shop_name) = '' OR UPPER(TRIM(raw_shop_name)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN') THEN NULL
                         ELSE TRIM(raw_shop_name)
                     END AS shop_name,
 
@@ -194,32 +195,63 @@ BEGIN
                   -- Exclude records quarantined by Bronze validation.
                   -- Must stay in sync with the price rule in sp_validate_bronze_products.
                   AND SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NOT NULL
+            ),
+            -- Reference coordinates for known shops (override scraped latitude/longitude)
+            shop_lookup AS (
+                SELECT 'The Thrifty Duo' AS lookup_shop, -34.09381146 AS lookup_lat, 18.84318164 AS lookup_lon UNION ALL
+                SELECT 'The Retro Collection', -26.25018465, 28.11045514 UNION ALL
+                SELECT 'Vintageclub', -33.91460233218425, 18.48394626 UNION ALL
+                SELECT 'Retro MCM', -25.73971248, 28.2414414 UNION ALL
+                SELECT 'Huisraad', -33.89934459, 18.60473736 UNION ALL
+                SELECT 'Retrend', -26.14306559, 28.01834357 UNION ALL
+                SELECT 'Cosmic Modern', -33.89673833, 18.60654708 UNION ALL
+                SELECT 'Statement Collectables', -25.77693766, 28.2585483 UNION ALL
+                SELECT 'Amphora_Studio', -26.120134, 27.901464
             )
             SELECT
-                shop_name,
-                latitude,
-                longitude,
-                region,
-                city,
-                category,
-                title,
-                price,
-                description,
-                makers,
-                primary_material,
-                era,
-                condition,
-                dimensions,
-                url,
-                available,
-                DATE(parsed_ts) AS timestamp_date,
-                TIME(parsed_ts) AS timestamp_time
-            FROM parsed_source
-            QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY parsed_ts DESC) = 1
+                p.shop_name,
+                COALESCE(l.lookup_lat, p.latitude) AS latitude,
+                COALESCE(l.lookup_lon, p.longitude) AS longitude,
+                p.region,
+                p.city,
+                p.category,
+                p.title,
+                p.price,
+                p.description,
+                p.makers,
+                p.primary_material,
+                p.era,
+                p.condition,
+                p.dimensions,
+                p.url,
+                p.available,
+                DATE(p.parsed_ts) AS timestamp_date,
+                TIME(p.parsed_ts) AS timestamp_time
+            FROM parsed_source p
+            LEFT JOIN shop_lookup l ON LOWER(p.shop_name) = LOWER(l.lookup_shop)
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY p.url ORDER BY p.parsed_ts DESC) = 1
         ) AS source
         ON target.url = source.url
 
-        WHEN MATCHED THEN
+        -- Only rewrite rows whose data actually changed; unchanged rows keep their
+        -- original batch_id / ingested_at. Scrape timestamps alone do not count as a change.
+        WHEN MATCHED AND (
+               target.shop_name IS DISTINCT FROM source.shop_name
+            OR target.latitude IS DISTINCT FROM source.latitude
+            OR target.longitude IS DISTINCT FROM source.longitude
+            OR target.region IS DISTINCT FROM source.region
+            OR target.city IS DISTINCT FROM source.city
+            OR target.category IS DISTINCT FROM source.category
+            OR target.title IS DISTINCT FROM source.title
+            OR target.price IS DISTINCT FROM source.price
+            OR target.description IS DISTINCT FROM source.description
+            OR target.makers IS DISTINCT FROM source.makers
+            OR target.primary_material IS DISTINCT FROM source.primary_material
+            OR target.era IS DISTINCT FROM source.era
+            OR target.condition IS DISTINCT FROM source.condition
+            OR target.dimensions IS DISTINCT FROM source.dimensions
+            OR target.available IS DISTINCT FROM source.available
+        ) THEN
             UPDATE SET
                 shop_name = source.shop_name,
                 latitude = source.latitude,
@@ -259,6 +291,8 @@ BEGIN
                 v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
             );
 
+        SET v_rows_merged = @@row_count;
+
     EXCEPTION WHEN ERROR THEN
         SET v_error_msg = FORMAT('Message: %s | Statement: %s', @@error.message, @@error.statement_text);
 
@@ -285,7 +319,8 @@ BEGIN
     VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
         'sp_load_silver_products', 'INFO_STAGE_COMPLETE',
-        FORMAT('Transformation COMPLETED in %d seconds', TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
+        FORMAT('Transformation COMPLETED for Bronze batch %s. Rows inserted or changed: %d in %d seconds',
+               v_bronze_batch_id, v_rows_merged, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
     );
 
 END;
