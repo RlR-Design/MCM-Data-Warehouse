@@ -204,8 +204,13 @@ END;
 
 
 -- STREAMING_CHUNK: Invoking procedure and verifying ingested records...
+/*
 -- =============================================================================
 -- INVOCATION & VERIFICATION
+--
+-- WARNING: Commented out so that re-running this file to update the procedure
+-- does not re-load the CSV. Each CALL appends the full file to bronze_raw_products.
+-- Run the CALL manually only when a new scrape file should be ingested.
 -- =============================================================================
 
 -- Execute stored procedure with default GCS path
@@ -223,3 +228,4 @@ SELECT *
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
 ORDER BY error_timestamp DESC
 LIMIT 10;
+*/
