@@ -43,29 +43,86 @@ BEGIN
     );
 
     BEGIN
+        -- STREAMING_CHUNK: Normalising dimension keys...
+        -- Dimension keys are built from a normalised form of each value (lower case,
+        -- trimmed, single spaces), so "Teak", "teak" and "Teak " share one key.
+        -- The display name stored in the dimension is the most common original spelling.
+        CREATE TEMP TABLE stg_normalised AS
+        SELECT
+            url,
+            title,
+            description,
+            era,
+            condition,
+            dimensions,
+            timestamp_date,
+            timestamp_time,
+            region,
+            city,
+            latitude,
+            longitude,
+            COALESCE(shop_name, 'Unknown') AS shop_name,
+            COALESCE(category, 'Uncategorised') AS category,
+            COALESCE(makers, '-1') AS makers,
+            COALESCE(primary_material, '-1') AS primary_material,
+            LOWER(REGEXP_REPLACE(TRIM(COALESCE(shop_name, 'Unknown')), r'\s+', ' ')) AS shop_key,
+            LOWER(REGEXP_REPLACE(TRIM(COALESCE(category, 'Uncategorised')), r'\s+', ' ')) AS category_key,
+            LOWER(REGEXP_REPLACE(TRIM(COALESCE(makers, '-1')), r'\s+', ' ')) AS maker_key,
+            LOWER(REGEXP_REPLACE(TRIM(COALESCE(primary_material, '-1')), r'\s+', ' ')) AS material_key
+        FROM statement_competitor_data_warehouse.silver_transformed_products;
+
         -- STREAMING_CHUNK: Populating dimension tables (Shop & Category)...
-        -- MERGE dim_shop
+        -- MERGE dim_shop: most common known region/city/location per shop.
+        -- Existing shops are updated when their attributes change.
         MERGE statement_competitor_data_warehouse.dim_shop AS target
         USING (
             SELECT
-                FARM_FINGERPRINT(shop_name_clean) AS shop_id,
-                shop_name_clean AS shop_name,
-                ANY_VALUE(region) AS region,
-                ANY_VALUE(city) AS city,
-                ANY_VALUE(latitude) AS latitude,
-                ANY_VALUE(longitude) AS longitude
+                shop_id,
+                shop_name,
+                region,
+                city,
+                location.latitude AS latitude,
+                location.longitude AS longitude
             FROM (
                 SELECT
-                    COALESCE(shop_name, 'Unknown') AS shop_name_clean,
-                    region,
-                    city,
-                    latitude,
-                    longitude
-                FROM statement_competitor_data_warehouse.silver_transformed_products
+                    FARM_FINGERPRINT(shop_key) AS shop_id,
+                    (SELECT v FROM UNNEST(ARRAY_AGG(shop_name)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS shop_name,
+                    COALESCE(
+                        (SELECT v FROM UNNEST(ARRAY_AGG(NULLIF(region, 'Unknown') IGNORE NULLS)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1),
+                        'Unknown'
+                    ) AS region,
+                    COALESCE(
+                        (SELECT v FROM UNNEST(ARRAY_AGG(NULLIF(city, 'Unknown') IGNORE NULLS)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1),
+                        'Unknown'
+                    ) AS city,
+                    (
+                        SELECT AS STRUCT v.latitude, v.longitude
+                        FROM UNNEST(ARRAY_AGG(
+                            IF(latitude IS NOT NULL AND longitude IS NOT NULL, STRUCT(latitude, longitude), NULL)
+                            IGNORE NULLS
+                        )) AS v
+                        GROUP BY v.latitude, v.longitude
+                        ORDER BY COUNT(*) DESC
+                        LIMIT 1
+                    ) AS location
+                FROM stg_normalised
+                GROUP BY shop_key
             )
-            GROUP BY shop_name_clean
         ) AS source
         ON target.shop_id = source.shop_id
+        WHEN MATCHED AND (
+               target.shop_name IS DISTINCT FROM source.shop_name
+            OR target.region IS DISTINCT FROM source.region
+            OR target.city IS DISTINCT FROM source.city
+            OR target.latitude IS DISTINCT FROM source.latitude
+            OR target.longitude IS DISTINCT FROM source.longitude
+        ) THEN
+            UPDATE SET
+                shop_name = source.shop_name,
+                region = source.region,
+                city = source.city,
+                latitude = source.latitude,
+                longitude = source.longitude
         WHEN NOT MATCHED THEN
             INSERT (shop_id, shop_name, region, city, latitude, longitude)
             VALUES (source.shop_id, source.shop_name, source.region, source.city, source.latitude, source.longitude);
@@ -73,12 +130,15 @@ BEGIN
         -- MERGE dim_category
         MERGE statement_competitor_data_warehouse.dim_category AS target
         USING (
-            SELECT DISTINCT
-                FARM_FINGERPRINT(COALESCE(category, 'Uncategorised')) AS category_id,
-                COALESCE(category, 'Uncategorised') AS category
-            FROM statement_competitor_data_warehouse.silver_transformed_products
+            SELECT
+                FARM_FINGERPRINT(category_key) AS category_id,
+                (SELECT v FROM UNNEST(ARRAY_AGG(category)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS category
+            FROM stg_normalised
+            GROUP BY category_key
         ) AS source
         ON target.category_id = source.category_id
+        WHEN MATCHED AND target.category IS DISTINCT FROM source.category THEN
+            UPDATE SET category = source.category
         WHEN NOT MATCHED THEN
             INSERT (category_id, category)
             VALUES (source.category_id, source.category);
@@ -87,12 +147,15 @@ BEGIN
         -- MERGE dim_maker
         MERGE statement_competitor_data_warehouse.dim_maker AS target
         USING (
-            SELECT DISTINCT
-                FARM_FINGERPRINT(COALESCE(makers, '-1')) AS maker_id,
-                COALESCE(makers, '-1') AS makers
-            FROM statement_competitor_data_warehouse.silver_transformed_products
+            SELECT
+                FARM_FINGERPRINT(maker_key) AS maker_id,
+                (SELECT v FROM UNNEST(ARRAY_AGG(makers)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS makers
+            FROM stg_normalised
+            GROUP BY maker_key
         ) AS source
         ON target.maker_id = source.maker_id
+        WHEN MATCHED AND target.makers IS DISTINCT FROM source.makers THEN
+            UPDATE SET makers = source.makers
         WHEN NOT MATCHED THEN
             INSERT (maker_id, makers)
             VALUES (source.maker_id, source.makers);
@@ -100,38 +163,51 @@ BEGIN
         -- MERGE dim_material
         MERGE statement_competitor_data_warehouse.dim_material AS target
         USING (
-            SELECT DISTINCT
-                FARM_FINGERPRINT(COALESCE(primary_material, '-1')) AS material_id,
-                COALESCE(primary_material, '-1') AS primary_material
-            FROM statement_competitor_data_warehouse.silver_transformed_products
+            SELECT
+                FARM_FINGERPRINT(material_key) AS material_id,
+                (SELECT v FROM UNNEST(ARRAY_AGG(primary_material)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS primary_material
+            FROM stg_normalised
+            GROUP BY material_key
         ) AS source
         ON target.material_id = source.material_id
+        WHEN MATCHED AND target.primary_material IS DISTINCT FROM source.primary_material THEN
+            UPDATE SET primary_material = source.primary_material
         WHEN NOT MATCHED THEN
             INSERT (material_id, primary_material)
             VALUES (source.material_id, source.primary_material);
 
         -- STREAMING_CHUNK: Upserting normalised data into the target fact table...
-        -- MERGE fact_product_scrape (Fact Table mapping)
+        -- MERGE fact_product_scrape (Fact Table mapping). Only changed rows are rewritten.
         MERGE statement_competitor_data_warehouse.fact_product_scrape AS target
         USING (
             SELECT
                 FARM_FINGERPRINT(url) AS product_id,
-                FARM_FINGERPRINT(COALESCE(shop_name, 'Unknown')) AS shop_id,
-                FARM_FINGERPRINT(COALESCE(category, 'Uncategorised')) AS category_id,
-                FARM_FINGERPRINT(COALESCE(makers, '-1')) AS maker_id,
-                FARM_FINGERPRINT(COALESCE(primary_material, '-1')) AS material_id,
+                FARM_FINGERPRINT(shop_key) AS shop_id,
+                FARM_FINGERPRINT(category_key) AS category_id,
+                FARM_FINGERPRINT(maker_key) AS maker_id,
+                FARM_FINGERPRINT(material_key) AS material_id,
                 url,
                 title,
                 description,
                 era,
                 condition,
                 dimensions
-            FROM statement_competitor_data_warehouse.silver_transformed_products
+            FROM stg_normalised
             -- Pick the most recent record per URL to handle potential duplicates reliably
             QUALIFY ROW_NUMBER() OVER (PARTITION BY url ORDER BY timestamp_date DESC, timestamp_time DESC) = 1
         ) AS source
         ON target.url = source.url
-        WHEN MATCHED THEN
+        WHEN MATCHED AND (
+               target.shop_id IS DISTINCT FROM source.shop_id
+            OR target.category_id IS DISTINCT FROM source.category_id
+            OR target.maker_id IS DISTINCT FROM source.maker_id
+            OR target.material_id IS DISTINCT FROM source.material_id
+            OR target.title IS DISTINCT FROM source.title
+            OR target.description IS DISTINCT FROM source.description
+            OR target.era IS DISTINCT FROM source.era
+            OR target.condition IS DISTINCT FROM source.condition
+            OR target.dimensions IS DISTINCT FROM source.dimensions
+        ) THEN
             UPDATE SET
                 shop_id = source.shop_id,
                 category_id = source.category_id,
@@ -156,6 +232,22 @@ BEGIN
                 source.url, source.title, source.description, source.era, source.condition, source.dimensions,
                 v_execution_id, v_batch_id, CAST(CURRENT_TIMESTAMP() AS DATETIME)
             );
+
+        -- STREAMING_CHUNK: Removing unused dimension members...
+        -- Remove dimension rows no fact row points to any more (e.g. old keys from
+        -- before case-insensitive matching, or values that no longer occur).
+        -- Dimensions are fully derived from Silver, so nothing is lost.
+        DELETE FROM statement_competitor_data_warehouse.dim_shop d
+        WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.shop_id = d.shop_id);
+
+        DELETE FROM statement_competitor_data_warehouse.dim_category d
+        WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.category_id = d.category_id);
+
+        DELETE FROM statement_competitor_data_warehouse.dim_maker d
+        WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.maker_id = d.maker_id);
+
+        DELETE FROM statement_competitor_data_warehouse.dim_material d
+        WHERE NOT EXISTS (SELECT 1 FROM statement_competitor_data_warehouse.fact_product_scrape f WHERE f.material_id = d.material_id);
 
         -- STREAMING_CHUNK: Catching execution failures and logging error details...
     EXCEPTION WHEN ERROR THEN
