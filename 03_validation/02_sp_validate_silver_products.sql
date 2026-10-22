@@ -173,7 +173,7 @@ USING (
       COALESCE(NULLIF(TRIM(condition), ''), '-1') AS condition,
       COALESCE(NULLIF(TRIM(dimensions), ''), '-1') AS dimensions,
       cleaned_url AS url,
-      COALESCE(available, FALSE) AS available,
+      available,  -- keep NULL (unknown); do not default to FALSE (sold)
       timestamp_date,
       timestamp_time
     FROM stg_validated_unprocessed
@@ -456,7 +456,7 @@ USING (
       COALESCE(NULLIF(TRIM(condition), ''), '-1') AS condition,
       COALESCE(NULLIF(TRIM(dimensions), ''), '-1') AS dimensions,
       cleaned_url AS url,
-      COALESCE(available, FALSE) AS available,
+      available,  -- keep NULL (unknown); do not default to FALSE (sold)
       timestamp_date,
       timestamp_time
     FROM stg_validated_unprocessed

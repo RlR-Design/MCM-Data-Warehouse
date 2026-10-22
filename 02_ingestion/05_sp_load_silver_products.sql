@@ -167,11 +167,14 @@ BEGIN
                         2
                     ) AS price,
 
-                    /* Available */
-                    COALESCE(
-                        SAFE_CAST(TRIM(raw_available) AS BOOL),
-                        FALSE
-                    ) AS available,
+                    /* Available - Maps common scraper values to TRUE/FALSE.
+                       Unrecognised or missing values become NULL (unknown) rather than FALSE,
+                       so they are not mistaken for sold items. */
+                    CASE
+                        WHEN UPPER(TRIM(raw_available)) IN ('TRUE', 'T', 'YES', 'Y', '1', '1.0', 'AVAILABLE', 'IN STOCK', 'INSTOCK', 'IN_STOCK', 'FOR SALE') THEN TRUE
+                        WHEN UPPER(TRIM(raw_available)) IN ('FALSE', 'F', 'NO', 'N', '0', '0.0', 'SOLD', 'SOLD OUT', 'SOLDOUT', 'SOLD_OUT', 'OUT OF STOCK', 'OUTOFSTOCK', 'OUT_OF_STOCK', 'UNAVAILABLE', 'NOT AVAILABLE') THEN FALSE
+                        ELSE NULL
+                    END AS available,
 
                     /* Parsed Timestamp */
                     COALESCE(

@@ -57,7 +57,8 @@ BEGIN
         FROM `statement_competitor_data_warehouse.silver_transformed_products` AS source
         WHERE target.product_id = FARM_FINGERPRINT(source.url)
           AND target.is_current = TRUE
-          AND (target.price != source.price OR target.available != source.available);
+          -- IS DISTINCT FROM treats NULL as a value, so changes to/from unknown availability are tracked
+          AND (target.price IS DISTINCT FROM source.price OR target.available IS DISTINCT FROM source.available);
 
         SET v_records_expired = @@row_count;
 
