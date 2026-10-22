@@ -191,17 +191,14 @@ BEGIN
                   -- Must stay in sync with the price rule in sp_validate_bronze_products.
                   AND SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NOT NULL
             ),
-            -- Reference coordinates for known shops (override scraped latitude/longitude)
+            -- Reference coordinates for known shops (override scraped latitude/longitude).
+            -- Maintained in ref_shop_locations (see 01_DDL/02_silver_ddl.sql).
             shop_lookup AS (
-                SELECT 'The Thrifty Duo' AS lookup_shop, -34.09381146 AS lookup_lat, 18.84318164 AS lookup_lon UNION ALL
-                SELECT 'The Retro Collection', -26.25018465, 28.11045514 UNION ALL
-                SELECT 'Vintageclub', -33.91460233218425, 18.48394626 UNION ALL
-                SELECT 'Retro MCM', -25.73971248, 28.2414414 UNION ALL
-                SELECT 'Huisraad', -33.89934459, 18.60473736 UNION ALL
-                SELECT 'Retrend', -26.14306559, 28.01834357 UNION ALL
-                SELECT 'Cosmic Modern', -33.89673833, 18.60654708 UNION ALL
-                SELECT 'Statement Collectables', -25.77693766, 28.2585483 UNION ALL
-                SELECT 'Amphora_Studio', -26.120134, 27.901464
+                SELECT
+                    TRIM(shop_name) AS lookup_shop,
+                    latitude AS lookup_lat,
+                    longitude AS lookup_lon
+                FROM statement_competitor_data_warehouse.ref_shop_locations
             )
             SELECT
                 p.shop_name,

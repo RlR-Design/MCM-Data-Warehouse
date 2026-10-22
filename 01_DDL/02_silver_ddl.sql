@@ -95,6 +95,37 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_validity_l
 PARTITION BY DATE(validation_timestamp);
 
 -- =============================================================================
+-- 5. SHOP LOCATIONS REFERENCE TABLE
+-- Known shop coordinates. sp_load_silver_products uses these instead of the
+-- scraped latitude/longitude. One row per shop (matched case-insensitively).
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.ref_shop_locations (
+    shop_name STRING NOT NULL OPTIONS(description="Shop name exactly as scraped (matched case-insensitively)"),
+    latitude FLOAT64 OPTIONS(description="Verified latitude of the shop"),
+    longitude FLOAT64 OPTIONS(description="Verified longitude of the shop"),
+    updated_at TIMESTAMP OPTIONS(description="When this location was last changed")
+);
+
+-- Seed the known shops (only inserts shops that are not in the table yet,
+-- so later corrections made in the table are never overwritten)
+MERGE statement_competitor_data_warehouse.ref_shop_locations AS target
+USING (
+    SELECT 'The Thrifty Duo' AS shop_name, -34.09381146 AS latitude, 18.84318164 AS longitude UNION ALL
+    SELECT 'The Retro Collection', -26.25018465, 28.11045514 UNION ALL
+    SELECT 'Vintageclub', -33.91460233218425, 18.48394626 UNION ALL
+    SELECT 'Retro MCM', -25.73971248, 28.2414414 UNION ALL
+    SELECT 'Huisraad', -33.89934459, 18.60473736 UNION ALL
+    SELECT 'Retrend', -26.14306559, 28.01834357 UNION ALL
+    SELECT 'Cosmic Modern', -33.89673833, 18.60654708 UNION ALL
+    SELECT 'Statement Collectables', -25.77693766, 28.2585483 UNION ALL
+    SELECT 'Amphora_Studio', -26.120134, 27.901464
+) AS source
+ON LOWER(target.shop_name) = LOWER(source.shop_name)
+WHEN NOT MATCHED THEN
+    INSERT (shop_name, latitude, longitude, updated_at)
+    VALUES (source.shop_name, source.latitude, source.longitude, CURRENT_TIMESTAMP());
+
+-- =============================================================================
 -- VERIFICATION QUERY
 -- Query BigQuery INFORMATION_SCHEMA to confirm all Silver tables are ready
 -- =============================================================================
