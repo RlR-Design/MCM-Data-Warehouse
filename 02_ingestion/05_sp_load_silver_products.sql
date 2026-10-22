@@ -18,12 +18,15 @@ Data Transformation and Load Stored Procedure (sp_load_silver_products)
 =============================================================================
 */
 
-CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_silver_products ()
+-- p_bronze_batch_id: the Bronze batch to load. Pass NULL to load the most recently
+-- validated Bronze batch. The batch must have been run through sp_validate_bronze_products.
+CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_silver_products (IN p_bronze_batch_id STRING)
 OPTIONS(strict_mode=false)
 BEGIN
     DECLARE start_time TIMESTAMP;
     DECLARE v_execution_id STRING;
     DECLARE v_batch_id STRING;
+    DECLARE v_bronze_batch_id STRING;
     DECLARE v_error_msg STRING;
     DECLARE v_error_type STRING;
 
@@ -31,16 +34,36 @@ BEGIN
     SET v_execution_id = GENERATE_UUID();
     SET v_batch_id = FORMAT_TIMESTAMP('BATCH_SLV_%Y%m%d_%H%M%S', start_time);
 
+    -- Resolve the Bronze batch: use the parameter, else the latest validated batch
+    SET v_bronze_batch_id = COALESCE(
+        p_bronze_batch_id,
+        (
+            SELECT batch_id
+            FROM statement_competitor_data_warehouse.bronze_validity_log
+            ORDER BY validation_timestamp DESC
+            LIMIT 1
+        )
+    );
+
     INSERT INTO statement_competitor_data_warehouse.silver_transformed_error_logs (
         log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
     )
     VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
         'sp_load_silver_products', 'INFO_STAGE_START',
-        'Starting Silver Layer Transformation and MERGE with robust string NULL handling (-1 for latitude, longitude, description, dimensions, makers, primary_material, era, condition), explicitly rounded price (2 decimals), and split timestamps.'
+        FORMAT('Starting Silver Layer Transformation and MERGE for Bronze batch %s, excluding Bronze-quarantined records.', COALESCE(v_bronze_batch_id, 'NONE'))
     );
 
     BEGIN
+        -- Guard: only load Bronze batches that have passed through Bronze validation
+        IF v_bronze_batch_id IS NULL OR NOT EXISTS (
+            SELECT 1
+            FROM statement_competitor_data_warehouse.bronze_validity_log
+            WHERE batch_id = v_bronze_batch_id
+        ) THEN
+            RAISE USING MESSAGE = FORMAT('Bronze batch %s has not been validated. Run sp_validate_bronze_products first.', COALESCE(v_bronze_batch_id, 'NONE'));
+        END IF;
+
         MERGE statement_competitor_data_warehouse.silver_transformed_products AS target
         USING (
             WITH parsed_source AS (
@@ -133,15 +156,13 @@ BEGIN
                         )
                     END AS longitude,
 
-                    /* Price - Explicitly cleaned and rounded to exactly 2 decimal places */
-                    COALESCE(
-                        ROUND(
-                            SAFE_CAST(
-                                REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.]', '') AS NUMERIC
-                            ),
-                            2
+                    /* Price - Explicitly cleaned and rounded to exactly 2 decimal places.
+                       Left NULL if unparseable (not 0.00) so Silver validation quarantines it. */
+                    ROUND(
+                        SAFE_CAST(
+                            REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.]', '') AS NUMERIC
                         ),
-                        CAST(0.00 AS NUMERIC)
+                        2
                     ) AS price,
 
                     /* Available */
@@ -161,9 +182,13 @@ BEGIN
                     ) AS parsed_ts
 
                 FROM statement_competitor_data_warehouse.bronze_raw_products
-                WHERE raw_url IS NOT NULL
+                WHERE batch_id = v_bronze_batch_id
+                  AND raw_url IS NOT NULL
                   AND TRIM(raw_url) != ''
                   AND UPPER(TRIM(raw_url)) NOT IN ('NULL', 'NONE', 'NAN', 'N/A', '-')
+                  -- Exclude records quarantined by Bronze validation.
+                  -- Must stay in sync with the price rule in sp_validate_bronze_products.
+                  AND SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NOT NULL
             )
             SELECT
                 shop_name,
@@ -265,7 +290,8 @@ END;
 -- =============================================================================
 
 -- Execute the Silver transformation stored procedure
--- CALL statement_competitor_data_warehouse.sp_load_silver_products();
+-- Pass NULL to load the latest validated Bronze batch, or a specific batch_id
+-- CALL statement_competitor_data_warehouse.sp_load_silver_products(NULL);
 
 -- Verify transformed records
 /*
