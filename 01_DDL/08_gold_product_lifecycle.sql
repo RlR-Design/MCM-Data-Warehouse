@@ -18,6 +18,7 @@ Objects:
   2. gold_product_presence  (view)  One row per product per scrape of its shop
   3. gold_product_events    (view)  One row per thing that happened to a product
   4. gold_product_status    (view)  One row per product with its current status
+  5. gold_products_flat     (view)  One row per product with all attributes + status (Data Studio source)
 
 The views hold no data and are always up to date. Re-running this script is safe:
 the rules table uses IF NOT EXISTS and the default rule is only inserted once.
@@ -399,6 +400,50 @@ SELECT
     scrapes_missed,
     grace AS delist_grace_scrapes
 FROM with_sold_at;
+
+
+-- =============================================================================
+-- 5. FLAT REPORTING VIEW (One Big Table)
+-- One row per product with all descriptive attributes, current price and
+-- lifecycle status. Intended as the single data source for Google Data Studio.
+-- =============================================================================
+CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_products_flat
+OPTIONS(description="One row per competitor product: shop, category, maker, material, current price and lifecycle status. Data Studio source.")
+AS
+SELECT
+    f.product_id,
+    f.url,
+    f.title,
+    s.shop_name,
+    s.region,
+    s.city,
+    s.latitude,
+    s.longitude,
+    c.category,
+    m.makers,
+    mat.primary_material,
+    f.era,
+    f.condition,
+    f.dimensions,
+    st.status,
+    st.sold_reason,
+    st.sold_at,
+    st.sold_price,
+    st.current_price,
+    st.current_available,
+    st.first_listed_price,
+    st.last_listed_price,
+    st.markdown_count,
+    st.total_markdown_pct,
+    st.days_on_market,
+    st.first_seen_at,
+    st.last_seen_at
+FROM statement_competitor_data_warehouse.fact_product_scrape f
+LEFT JOIN statement_competitor_data_warehouse.dim_shop s ON s.shop_id = f.shop_id
+LEFT JOIN statement_competitor_data_warehouse.dim_category c ON c.category_id = f.category_id
+LEFT JOIN statement_competitor_data_warehouse.dim_maker m ON m.maker_id = f.maker_id
+LEFT JOIN statement_competitor_data_warehouse.dim_material mat ON mat.material_id = f.material_id
+LEFT JOIN statement_competitor_data_warehouse.gold_product_status st ON st.product_id = f.product_id;
 
 
 /*
