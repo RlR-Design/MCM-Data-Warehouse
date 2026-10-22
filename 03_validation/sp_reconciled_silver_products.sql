@@ -3,7 +3,7 @@
 SILVER LAYER: RECONCILIATION & VALIDATION PROCEDURE
 
 Dataset: statement_competitor_data_warehouse
-Procedure: sp_reconcile_silver_layer
+Procedure: sp_reconciled_silver_products
 
 Description:
 This is the final checkpoint in the Silver layer before data is consumed by
@@ -61,7 +61,7 @@ BEGIN
     -- CHECK 2: Key Relationships Verification (Normalised fact to dimensions)
     SET (v_orphan_keys) = (
         SELECT AS STRUCT COUNT(f.product_id)
-        FROM statement_competitor_data_warehouse.silver_normalised_products f
+        FROM statement_competitor_data_warehouse.fact_product_scrape f
         LEFT JOIN statement_competitor_data_warehouse.dim_shop s ON f.shop_id = s.shop_id
         WHERE s.shop_id IS NULL
     );
@@ -119,7 +119,7 @@ END;
 -- =============================================================================
 
 -- 1. Execute the reconciliation procedure
-CALL statement_competitor_data_warehouse.sp_reconcile_silver_layer();
+CALL statement_competitor_data_warehouse.sp_reconciled_silver_products();
 
 -- 2. Check the reconciliation error logs to review any flagged data losses or anomalies
 SELECT *

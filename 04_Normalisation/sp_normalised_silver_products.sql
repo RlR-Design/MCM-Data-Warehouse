@@ -3,11 +3,11 @@
 =============================================================================
 
 Dataset: statement_competitor_data_warehouse
-Procedure: sp_normalised_silve_products
+Procedure: sp_normalise_silver_products
 
 Description:
 This script builds the dimension tables and the central normalised fact table
-(`silver_normalised_products`) according to the Star Schema ER Diagram.
+(`fact_product_scrape`) according to the Star Schema ER Diagram.
 It also sets up the required error logging table for the normalisation process.
 =============================================================================
 */
@@ -16,7 +16,7 @@ It also sets up the required error logging table for the normalisation process.
 =============================================================================
 STORED PROCEDURE: sp_normalise_silver_products
 Description: Maps primary and foreign keys, extracts unique dimension records,
-and merges fact data into `silver_normalised_products`.
+and merges fact data into `fact_product_scrape`.
 =============================================================================
 */
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_normalise_silver_products()
@@ -202,9 +202,9 @@ SELECT
 FROM `statement_competitor_data_warehouse.silver_transformed_products`
 UNION ALL
 SELECT
-    'Fact Table (silver_normalised_products)' AS table_name,
+    'Fact Table (fact_product_scrape)' AS table_name,
     COUNT(*) AS row_count
-FROM `statement_competitor_data_warehouse.silver_normalised_products`;
+FROM `statement_competitor_data_warehouse.fact_product_scrape`;
 
 
 -- Verify Dimension Table Population
@@ -224,7 +224,7 @@ SELECT 'dim_material', COUNT(*) FROM `statement_competitor_data_warehouse.dim_ma
 
 SELECT
     COUNT(f.shop_id) AS missing_shop_ids
-FROM `statement_competitor_data_warehouse.silver_normalised_products` f
+FROM `statement_competitor_data_warehouse.fact_product_scrape` f
 LEFT JOIN `statement_competitor_data_warehouse.dim_shop` d
     ON f.shop_id = d.shop_id
 WHERE d.shop_id IS NULL;

@@ -116,7 +116,7 @@ Dataset: statement_competitor_data_warehouse
 
 Description:
 This script builds the dimension tables and the central normalised fact table
-(`silver_normalised_products`) according to the Star Schema ER Diagram.
+(`fact_product_scrape`) according to the Star Schema ER Diagram.
 It also sets up the required error logging table for the normalisation process.
 =============================================================================
 */
