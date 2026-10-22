@@ -177,14 +177,13 @@ BEGIN
                         ELSE NULL
                     END AS available,
 
-                    /* Parsed Timestamp */
+                    /* Parsed Timestamp - Left NULL if unparseable rather than inventing a
+                       scrape time. NULLs sort last in the latest-per-URL dedup below. */
                     COALESCE(
                         SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%E*S', TRIM(scrape_timestamp)),
                         SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%E*S', TRIM(scrape_timestamp)),
-                        SAFE.PARSE_TIMESTAMP('%Y-%m-%d %H:%M:%S', TRIM(scrape_timestamp)),
                         SAFE.PARSE_TIMESTAMP('%Y-%m-%dT%H:%M:%SZ', TRIM(scrape_timestamp)),
-                        SAFE_CAST(TRIM(scrape_timestamp) AS TIMESTAMP),
-                        CURRENT_TIMESTAMP()
+                        SAFE_CAST(TRIM(scrape_timestamp) AS TIMESTAMP)
                     ) AS parsed_ts
 
                 FROM statement_competitor_data_warehouse.bronze_raw_products
