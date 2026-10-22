@@ -253,7 +253,7 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_price_history
     -- SCD Type 2 Tracking Columns
     -- ==========================================
     valid_from TIMESTAMP OPTIONS(description="SCD Type 2: The exact timestamp from which this price/availability record became active"),
-    valid_to TIMESTAMP OPTIONS(description="SCD Type 2: The timestamp when this record was superseded by a new change (NULL if currently active)"),
+    valid_to TIMESTAMP OPTIONS(description="SCD Type 2: The timestamp when this record was superseded by a new change (9999-12-31 23:59:59 UTC if currently active)"),
     is_current BOOL OPTIONS(description="SCD Type 2: Boolean flag indicating if this is the most recent, active price record for the product"),
 
     -- ==========================================
