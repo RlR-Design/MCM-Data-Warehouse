@@ -5,16 +5,23 @@ Layer    : Bronze
 Purpose  : Checks each shop's scrape in one Bronze batch against that shop's
            last 3 non-failed scrapes and records the result in
            bronze_scrape_health:
-             FAILED   SHOP_MISSING          shop from recent batches has no rows
+             FAILED   SHOP_MISSING          shop from recent batches or the run summary has no rows
                       LOW_PRODUCT_COUNT     products below min_count_ratio x baseline
                       HIGH_QUARANTINE_RATE  quarantined share above max_quarantine_rate
                       STALE_SCRAPE          latest scrape time not newer than before
+                      SCRAPER_FAILED        run summary status FAILED
+                      SCRAPER_PARTIAL       run summary status PARTIAL
+                      BELOW_SITE_COUNT      products below min_expected_ratio x site's own count
              WARNING  FIELD_DROPOUT         normally filled field mostly empty
                       DUPLICATE_URLS        repeated URLs above max_duplicate_rate
+                      CSV_COUNT_MISMATCH    CSV product count differs from the run summary
+                      SUMMARY_MISSING       batch has a run summary, but not for this shop
+             Run summary checks apply only when the batch has a run summary file.
            FAILED scrapes are still loaded; Gold ignores them for delisting.
 When     : Deploy at setup and after any change. Runs as step 3 of sp_run_pipeline.
 Requires : 02_sp_validate_bronze_products has validated the batch.
            Thresholds in ref_shop_rules (04_create_reference_tables.sql).
+           Optional: run summary loaded by 01_sp_load_bronze_products.
 Params   : p_batch_id  Bronze batch to check. NULL = latest validated batch.
 Logs     : bronze_raw_error_logs (one SCRAPE_FAILED / SCRAPE_WARNING row per shop issue)
 Warning  : Never stops the pipeline for data issues. The first batch has no
@@ -164,10 +171,26 @@ BEGIN
             WHERE batch_id = v_batch_id
             GROUP BY shop_name
         ),
+        -- Scraper's run summary per shop for this batch (latest row per shop).
+        run_summary AS (
+            SELECT
+                TRIM(raw_shop_name) AS shop_name,
+                UPPER(TRIM(raw_status)) AS scraper_status,
+                SAFE_CAST(TRIM(raw_products_found) AS INT64) AS products_found,
+                SAFE_CAST(TRIM(raw_products_expected) AS INT64) AS products_expected,
+                NULLIF(TRIM(raw_error_message), '') AS scraper_error
+            FROM statement_competitor_data_warehouse.bronze_scrape_run_summary
+            WHERE batch_id = v_batch_id
+              AND NULLIF(TRIM(raw_shop_name), '') IS NOT NULL
+            QUALIFY ROW_NUMBER() OVER (PARTITION BY TRIM(raw_shop_name) ORDER BY ingested_at DESC) = 1
+        ),
+        -- Shops to evaluate: in this batch, in recent batches or in the run summary.
         shops AS (
             SELECT shop_name FROM current_batch
             UNION DISTINCT
             SELECT shop_name FROM expected_shops
+            UNION DISTINCT
+            SELECT shop_name FROM run_summary
         ),
         -- Measurements and thresholds per shop (shop rule, else '*' default, else built-in).
         measured AS (
@@ -183,6 +206,12 @@ BEGIN
                 c.price_empty_rate, b.price_empty_rate AS base_price_empty_rate,
                 c.available_empty_rate, b.available_empty_rate AS base_available_empty_rate,
                 c.scrape_ts_empty_rate, b.scrape_ts_empty_rate AS base_scrape_ts_empty_rate,
+                rs.scraper_status,
+                rs.products_found,
+                rs.products_expected,
+                rs.scraper_error,
+                EXISTS (SELECT 1 FROM run_summary) AS has_run_summary,
+                COALESCE(sr.min_expected_ratio, dr.min_expected_ratio, 0.9) AS min_expected_ratio,
                 COALESCE(sr.min_count_ratio, dr.min_count_ratio, 0.7) AS min_count_ratio,
                 COALESCE(sr.max_quarantine_rate, dr.max_quarantine_rate, 0.2) AS max_quarantine_rate,
                 COALESCE(sr.max_duplicate_rate, dr.max_duplicate_rate, 0.05) AS max_duplicate_rate,
@@ -191,6 +220,7 @@ BEGIN
             LEFT JOIN current_batch c ON c.shop_name = sh.shop_name
             LEFT JOIN baseline b ON b.shop_name = sh.shop_name
             LEFT JOIN quarantine q ON q.shop_name = sh.shop_name
+            LEFT JOIN run_summary rs ON rs.shop_name = sh.shop_name
             LEFT JOIN statement_competitor_data_warehouse.ref_shop_rules sr ON LOWER(sr.shop_name) = LOWER(sh.shop_name)
             LEFT JOIN statement_competitor_data_warehouse.ref_shop_rules dr ON dr.shop_name = '*'
         ),
@@ -209,14 +239,20 @@ BEGIN
                     OR (scrape_ts_empty_rate > max_field_empty_rate AND base_scrape_ts_empty_rate < 0.1),
                     FALSE
                 ) AS is_field_dropout,
-                COALESCE(duplicate_url_rate > max_duplicate_rate, FALSE) AS is_duplicate_urls
+                COALESCE(duplicate_url_rate > max_duplicate_rate, FALSE) AS is_duplicate_urls,
+                COALESCE(scraper_status = 'FAILED', FALSE) AS is_scraper_failed,
+                COALESCE(scraper_status = 'PARTIAL', FALSE) AS is_scraper_partial,
+                COALESCE(products_expected > 0 AND COALESCE(product_count, 0) < products_expected * min_expected_ratio, FALSE) AS is_below_site_count,
+                COALESCE(product_count != products_found, FALSE) AS is_csv_count_mismatch,
+                has_run_summary AND scraper_status IS NULL AND product_count IS NOT NULL AS is_summary_missing
             FROM measured
         )
         SELECT
             shop_name,
             CASE
-                WHEN is_shop_missing OR is_low_count OR is_high_quarantine OR is_stale THEN 'FAILED'
-                WHEN is_field_dropout OR is_duplicate_urls THEN 'WARNING'
+                WHEN is_shop_missing OR is_low_count OR is_high_quarantine OR is_stale
+                  OR is_scraper_failed OR is_scraper_partial OR is_below_site_count THEN 'FAILED'
+                WHEN is_field_dropout OR is_duplicate_urls OR is_csv_count_mismatch OR is_summary_missing THEN 'WARNING'
                 ELSE 'HEALTHY'
             END AS status,
             ARRAY_TO_STRING([
@@ -224,16 +260,28 @@ BEGIN
                 IF(is_low_count, 'LOW_PRODUCT_COUNT', NULL),
                 IF(is_high_quarantine, 'HIGH_QUARANTINE_RATE', NULL),
                 IF(is_stale, 'STALE_SCRAPE', NULL),
+                IF(is_scraper_failed, 'SCRAPER_FAILED', NULL),
+                IF(is_scraper_partial, 'SCRAPER_PARTIAL', NULL),
+                IF(is_below_site_count, 'BELOW_SITE_COUNT', NULL),
                 IF(is_field_dropout, 'FIELD_DROPOUT', NULL),
-                IF(is_duplicate_urls, 'DUPLICATE_URLS', NULL)
+                IF(is_duplicate_urls, 'DUPLICATE_URLS', NULL),
+                IF(is_csv_count_mismatch, 'CSV_COUNT_MISMATCH', NULL),
+                IF(is_summary_missing, 'SUMMARY_MISSING', NULL)
             ], '; ') AS issues,
             product_count,
             baseline_count,
             quarantine_rate,
             duplicate_url_rate,
             latest_scrape_ts,
+            scraper_status,
+            products_found,
+            products_expected,
             FORMAT(
-                'products %s (baseline %s); quarantined %s%%; duplicate URLs %s%%; empty title/price/available/scrape time %s/%s/%s/%s%%; latest scrape %s (previous %s)',
+                'scraper %s, found %s, site lists %s%s; products %s (baseline %s); quarantined %s%%; duplicate URLs %s%%; empty title/price/available/scrape time %s/%s/%s/%s%%; latest scrape %s (previous %s)',
+                COALESCE(scraper_status, '-'),
+                COALESCE(CAST(products_found AS STRING), '-'),
+                COALESCE(CAST(products_expected AS STRING), '-'),
+                COALESCE(CONCAT(', error: ', scraper_error), ''),
                 COALESCE(CAST(product_count AS STRING), '-'),
                 COALESCE(CAST(baseline_count AS STRING), '-'),
                 COALESCE(CAST(ROUND(quarantine_rate * 100, 1) AS STRING), '-'),
@@ -250,11 +298,13 @@ BEGIN
         -- Record the result per shop.
         INSERT INTO statement_competitor_data_warehouse.bronze_scrape_health (
             health_id, execution_id, batch_id, shop_name, checked_at, status, issues,
-            product_count, baseline_count, quarantine_rate, duplicate_url_rate, latest_scrape_ts, details
+            product_count, baseline_count, quarantine_rate, duplicate_url_rate, latest_scrape_ts, details,
+            scraper_status, products_found, products_expected
         )
         SELECT
             GENERATE_UUID(), v_execution_id, v_batch_id, shop_name, CURRENT_TIMESTAMP(), status, issues,
-            product_count, baseline_count, quarantine_rate, duplicate_url_rate, latest_scrape_ts, details
+            product_count, baseline_count, quarantine_rate, duplicate_url_rate, latest_scrape_ts, details,
+            scraper_status, products_found, products_expected
         FROM stg_scrape_health;
 
         -- Log one row per shop with issues.

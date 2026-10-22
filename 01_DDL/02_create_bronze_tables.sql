@@ -2,9 +2,9 @@
 ===============================================================================
 Script   : 02_create_bronze_tables.sql
 Layer    : Bronze
-Purpose  : Creates the Bronze landing table and its log, quarantine and scrape
-           health tables. Bronze stores scraped data exactly as received, all
-           as STRING.
+Purpose  : Creates the Bronze landing tables (products and the scraper's run
+           summary) and their log, quarantine and scrape health tables. Bronze
+           stores scraped data exactly as received, all as STRING.
 When     : Initial setup, after 01_create_dataset.sql. Safe to re-run.
 Warning  : Changes to columns here are not applied to existing tables.
            Use ALTER TABLE ... ADD COLUMN IF NOT EXISTS instead.
@@ -93,7 +93,39 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_scrape_hea
     quarantine_rate FLOAT64 OPTIONS(description="Share of the shop's rows quarantined by Bronze validation"),
     duplicate_url_rate FLOAT64 OPTIONS(description="Share of the shop's rows with a repeated URL"),
     latest_scrape_ts TIMESTAMP OPTIONS(description="Latest scrape timestamp in this scrape"),
-    details STRING OPTIONS(description="Measured values behind the result")
+    details STRING OPTIONS(description="Measured values behind the result"),
+    scraper_status STRING OPTIONS(description="Status reported by the scraper run summary (SUCCESS, PARTIAL, FAILED)"),
+    products_found INT64 OPTIONS(description="Products the scraper reported finding"),
+    products_expected INT64 OPTIONS(description="Products the shop's site reported listing")
+);
+
+-- Add the run summary columns to an existing table.
+ALTER TABLE statement_competitor_data_warehouse.bronze_scrape_health
+    ADD COLUMN IF NOT EXISTS scraper_status STRING OPTIONS(description="Status reported by the scraper run summary (SUCCESS, PARTIAL, FAILED)"),
+    ADD COLUMN IF NOT EXISTS products_found INT64 OPTIONS(description="Products the scraper reported finding"),
+    ADD COLUMN IF NOT EXISTS products_expected INT64 OPTIONS(description="Products the shop's site reported listing");
+
+-- -----------------------------------------------------------------------------
+-- bronze_scrape_run_summary: the scraper's own report, one row per shop per run,
+-- loaded unchanged from <products file>_run_summary.csv
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_scrape_run_summary (
+    raw_run_id STRING,
+    raw_shop_name STRING,
+    raw_started_at STRING,
+    raw_finished_at STRING,
+    raw_status STRING,
+    raw_pages_scraped STRING,
+    raw_products_found STRING,
+    raw_products_expected STRING,
+    raw_http_errors STRING,
+    raw_retries STRING,
+    raw_error_message STRING,
+    raw_scraper_version STRING,
+    source_uri STRING,
+    execution_id STRING,
+    batch_id STRING,
+    ingested_at TIMESTAMP
 );
 
 
@@ -101,7 +133,7 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_scrape_hea
 ===============================================================================
 Tests (run manually)
 ===============================================================================
--- All five Bronze tables exist.
+-- All six Bronze tables exist.
 SELECT table_name, creation_time
 FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
 WHERE table_name LIKE 'bronze_%'

@@ -3,7 +3,9 @@
 Script   : 01_sp_load_bronze_products.sql
 Layer    : Bronze
 Purpose  : Loads a scraped CSV from Cloud Storage and appends it unchanged to
-           bronze_raw_products as a new batch.
+           bronze_raw_products as a new batch. Also loads the scraper's run
+           summary (<name>_run_summary.csv, same folder) into
+           bronze_scrape_run_summary under the same batch id, if present.
 When     : Deploy at setup and after any change. Runs as step 1 of sp_run_pipeline.
 Requires : 02_create_bronze_tables.sql
 Params   : p_gcs_uri  CSV location. NULL = gs://statement_competitor_data_warehouse/MCM_All_products.csv
@@ -16,6 +18,7 @@ Warning  : Every CALL appends the whole file. Calling twice with the same file
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_load_bronze_products (IN p_gcs_uri STRING)
 BEGIN
     DECLARE evaluated_uri STRING;
+    DECLARE evaluated_summary_uri STRING;
     DECLARE start_time TIMESTAMP;
     DECLARE v_execution_id STRING;
     DECLARE v_batch_id STRING;
@@ -124,6 +127,73 @@ BEGIN
             CURRENT_TIMESTAMP() AS ingested_at
         FROM stg_bronze_raw_products;
 
+        -- Load the scraper's run summary (<name>_run_summary.csv) into the same batch.
+        -- Optional: a missing or unreadable file is logged as a warning, not an error.
+        IF REGEXP_CONTAINS(evaluated_uri, r'\.csv$') THEN
+            SET evaluated_summary_uri = REGEXP_REPLACE(evaluated_uri, r'\.csv$', '_run_summary.csv');
+
+            BEGIN
+                -- Create a session staging table matching the summary columns.
+                CREATE OR REPLACE TEMP TABLE stg_scrape_run_summary (
+                    raw_run_id STRING,
+                    raw_shop_name STRING,
+                    raw_started_at STRING,
+                    raw_finished_at STRING,
+                    raw_status STRING,
+                    raw_pages_scraped STRING,
+                    raw_products_found STRING,
+                    raw_products_expected STRING,
+                    raw_http_errors STRING,
+                    raw_retries STRING,
+                    raw_error_message STRING,
+                    raw_scraper_version STRING
+                );
+
+                -- Load the summary CSV into the staging table.
+                EXECUTE IMMEDIATE FORMAT("""
+                    LOAD DATA OVERWRITE TEMP TABLE stg_scrape_run_summary (
+                        raw_run_id STRING, raw_shop_name STRING, raw_started_at STRING, raw_finished_at STRING,
+                        raw_status STRING, raw_pages_scraped STRING, raw_products_found STRING,
+                        raw_products_expected STRING, raw_http_errors STRING, raw_retries STRING,
+                        raw_error_message STRING, raw_scraper_version STRING
+                    )
+                    FROM FILES (
+                        format = 'CSV',
+                        uris = [%T],
+                        skip_leading_rows = 1,
+                        field_delimiter = ',',
+                        quote = '"',
+                        allow_quoted_newlines = true
+                    )
+                """, evaluated_summary_uri);
+
+                -- Append the summary rows to Bronze with the products batch id.
+                INSERT INTO statement_competitor_data_warehouse.bronze_scrape_run_summary (
+                    raw_run_id, raw_shop_name, raw_started_at, raw_finished_at, raw_status,
+                    raw_pages_scraped, raw_products_found, raw_products_expected, raw_http_errors,
+                    raw_retries, raw_error_message, raw_scraper_version,
+                    source_uri, execution_id, batch_id, ingested_at
+                )
+                SELECT
+                    raw_run_id, raw_shop_name, raw_started_at, raw_finished_at, raw_status,
+                    raw_pages_scraped, raw_products_found, raw_products_expected, raw_http_errors,
+                    raw_retries, raw_error_message, raw_scraper_version,
+                    evaluated_summary_uri, v_execution_id, v_batch_id, CURRENT_TIMESTAMP()
+                FROM stg_scrape_run_summary;
+
+            EXCEPTION WHEN ERROR THEN
+                -- Log the missing summary and continue with the products load.
+                INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
+                    log_id, execution_id, batch_id, error_timestamp, scraper_job_id, error_type, error_details
+                )
+                VALUES (
+                    GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
+                    'sp_load_bronze_products', 'RUN_SUMMARY_MISSING',
+                    FORMAT('No run summary loaded from %s: %s', evaluated_summary_uri, COALESCE(@@error.message, 'Unknown error'))
+                );
+            END;
+        END IF;
+
     EXCEPTION WHEN ERROR THEN
         -- Capture and classify the error.
         SET v_error_msg = FORMAT(
@@ -178,6 +248,12 @@ SELECT batch_id, MIN(ingested_at) AS loaded_at, COUNT(*) AS row_count, COUNT(DIS
 FROM statement_competitor_data_warehouse.bronze_raw_products
 GROUP BY batch_id
 ORDER BY loaded_at DESC;
+
+-- Run summary rows loaded for the latest batch (none means RUN_SUMMARY_MISSING was logged).
+SELECT raw_shop_name, raw_status, raw_products_found, raw_products_expected, raw_error_message
+FROM statement_competitor_data_warehouse.bronze_scrape_run_summary
+WHERE batch_id = (SELECT batch_id FROM statement_competitor_data_warehouse.bronze_raw_products ORDER BY ingested_at DESC LIMIT 1)
+ORDER BY raw_shop_name;
 
 -- Latest run logged INFO_STAGE_START and INFO_STAGE_COMPLETE (no error rows).
 SELECT error_timestamp, error_type, error_details

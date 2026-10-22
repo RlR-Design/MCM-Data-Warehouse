@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.ref_shop_rules (
     min_count_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if product count is below this share of the shop's baseline"),
     max_quarantine_rate FLOAT64 OPTIONS(description="Scrape health: FAILED if more than this share of the shop's rows is quarantined"),
     max_duplicate_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if more than this share of the shop's rows repeats a URL"),
-    max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows")
+    max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows"),
+    min_expected_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if products in the CSV are below this share of the count the shop's site reports")
 );
 
 -- Add the scrape health columns to an existing table.
@@ -62,7 +63,8 @@ ALTER TABLE statement_competitor_data_warehouse.ref_shop_rules
     ADD COLUMN IF NOT EXISTS min_count_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if product count is below this share of the shop's baseline"),
     ADD COLUMN IF NOT EXISTS max_quarantine_rate FLOAT64 OPTIONS(description="Scrape health: FAILED if more than this share of the shop's rows is quarantined"),
     ADD COLUMN IF NOT EXISTS max_duplicate_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if more than this share of the shop's rows repeats a URL"),
-    ADD COLUMN IF NOT EXISTS max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows");
+    ADD COLUMN IF NOT EXISTS max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows"),
+    ADD COLUMN IF NOT EXISTS min_expected_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if products in the CSV are below this share of the count the shop's site reports");
 
 -- Seed the default rule if it is missing.
 MERGE statement_competitor_data_warehouse.ref_shop_rules AS target
@@ -70,9 +72,9 @@ USING (SELECT '*' AS shop_name) AS source
 ON target.shop_name = source.shop_name
 WHEN NOT MATCHED THEN
     INSERT (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at,
-            min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate)
+            min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate, min_expected_ratio)
     VALUES ('*', TRUE, 2, 'Default rule for shops without their own row', CURRENT_TIMESTAMP(),
-            0.7, 0.2, 0.05, 0.5);
+            0.7, 0.2, 0.05, 0.5, 0.9);
 
 -- Fill default scrape health thresholds on the '*' row where still empty.
 UPDATE statement_competitor_data_warehouse.ref_shop_rules
@@ -80,7 +82,8 @@ SET
     min_count_ratio = COALESCE(min_count_ratio, 0.7),
     max_quarantine_rate = COALESCE(max_quarantine_rate, 0.2),
     max_duplicate_rate = COALESCE(max_duplicate_rate, 0.05),
-    max_field_empty_rate = COALESCE(max_field_empty_rate, 0.5)
+    max_field_empty_rate = COALESCE(max_field_empty_rate, 0.5),
+    min_expected_ratio = COALESCE(min_expected_ratio, 0.9)
 WHERE shop_name = '*';
 
 
@@ -93,9 +96,9 @@ SELECT shop_name, latitude, longitude, updated_at
 FROM statement_competitor_data_warehouse.ref_shop_locations
 ORDER BY shop_name;
 
--- Default rule present (expect '*', TRUE, 2, 0.7, 0.2, 0.05, 0.5).
+-- Default rule present (expect '*', TRUE, 2, 0.7, 0.2, 0.05, 0.5, 0.9).
 SELECT shop_name, zero_price_means_sold, delist_grace_scrapes,
-       min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate, notes
+       min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate, min_expected_ratio, notes
 FROM statement_competitor_data_warehouse.ref_shop_rules
 ORDER BY shop_name;
 

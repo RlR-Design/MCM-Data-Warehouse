@@ -43,7 +43,8 @@ All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. 
 | 4 | `01_DDL/04_create_reference_tables.sql` | `ref_shop_locations`, `ref_shop_rules` |
 | 5 | `01_DDL/05_create_gold_views.sql` | Gold star schema views |
 | 6 | `01_DDL/06_create_gold_lifecycle_views.sql` | Gold lifecycle and reporting views |
-| 7 | `02_Stored_Procedures/01` to `09` | Stored procedures |
+| 7 | `01_DDL/07_create_monitoring_views.sql` | Scrape monitoring views |
+| 8 | `02_Stored_Procedures/01` to `09` | Stored procedures |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
@@ -78,3 +79,25 @@ Maintained by hand, no redeploy needed:
 ### Scrape health
 
 `bronze_scrape_health` holds one row per shop per batch: `HEALTHY`, `WARNING` or `FAILED`, with the reasons. Failed scrapes are still loaded, but the Gold views ignore them when deciding whether a product was delisted.
+
+Monitoring views:
+
+- `mon_scrape_runs`: one row per run with overall status, shops per status, product totals and duration.
+- `mon_scrape_shop_runs`: one row per shop per run with the scraper's report next to the warehouse checks.
+
+### Scrape run summary file
+
+Upload next to the products CSV, in the same folder, named `<name>_run_summary.csv` (e.g. `MCM_All_products.csv` and `MCM_All_products_run_summary.csv`). It is optional; without it, only the warehouse-side checks run. `04_Scraper/scrape_run_summary.py` writes it.
+
+| Column | Example | Meaning |
+|---|---|---|
+| `run_id` | `2b47d3b0-...` | Same for every shop in one run |
+| `shop_name` | `Retro MCM` | Exactly as in the products CSV |
+| `started_at` / `finished_at` | `2026-10-22 08:00:00` | UTC |
+| `status` | `SUCCESS`, `PARTIAL`, `FAILED` | Scraper's own verdict |
+| `pages_scraped` | `13` | Listing pages visited |
+| `products_found` | `312` | Products extracted |
+| `products_expected` | `312` | Count shown by the site, blank if not shown |
+| `http_errors` / `retries` | `0` | Request failures and retries |
+| `error_message` | `TimeoutError: ...` | Blank on success |
+| `scraper_version` | `1.0.0` | Scraper release |
