@@ -157,10 +157,12 @@ BEGIN
                     END AS longitude,
 
                     /* Price - Explicitly cleaned and rounded to exactly 2 decimal places.
-                       Left NULL if unparseable (not 0.00) so Silver validation quarantines it. */
+                       Left NULL if unparseable (not 0.00) so Silver validation quarantines it.
+                       Keeps the minus sign (same regex as sp_validate_bronze_products) so negative
+                       prices stay negative and are quarantined by Silver validation. */
                     ROUND(
                         SAFE_CAST(
-                            REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.]', '') AS NUMERIC
+                            REGEXP_REPLACE(TRIM(raw_price), r'[^0-9.-]', '') AS NUMERIC
                         ),
                         2
                     ) AS price,
