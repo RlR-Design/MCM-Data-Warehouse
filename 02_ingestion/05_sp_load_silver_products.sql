@@ -311,6 +311,7 @@ BEGIN
     VALUES (
         GENERATE_UUID(), v_execution_id, v_batch_id, CURRENT_TIMESTAMP(),
         'sp_load_silver_products', 'INFO_STAGE_COMPLETE',
+        -- sp_reconciled_silver_products reads the Bronze batch id from this text ("for Bronze batch <id>.")
         FORMAT('Transformation COMPLETED for Bronze batch %s. Rows inserted or changed: %d in %d seconds',
                v_bronze_batch_id, v_rows_merged, TIMESTAMP_DIFF(CURRENT_TIMESTAMP(), start_time, SECOND))
     );
