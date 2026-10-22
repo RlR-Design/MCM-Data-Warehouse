@@ -11,9 +11,10 @@ Description:
   4. silver_validity_log: Records audit & execution summary metrics.
 =============================================================================
 
-    WARNING:
-    Running this script will delete all the historical data that exists in the current table. This script should only be
-    used in the event or a system failure or in the event that the system needs to be refreshed.
+    NOTE:
+    All tables use CREATE TABLE IF NOT EXISTS, so re-running this script is safe and never deletes data.
+    Existing tables are left untouched, which also means column changes in this script are NOT applied to them.
+    To change an existing table, use ALTER TABLE (e.g. ADD COLUMN IF NOT EXISTS) instead of recreating it.
 =============================================================================
 
  */
@@ -22,9 +23,7 @@ Description:
 -- 1. MAIN SILVER TRANSFORMED TABLE
 -- Standardized data types applied (STRING, FLOAT64, NUMERIC, BOOL, DATETIME)
 -- =============================================================================
-DROP TABLE IF EXISTS statement_competitor_data_warehouse.silver_transformed_products;
-
-CREATE TABLE statement_competitor_data_warehouse.silver_transformed_products (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_transformed_products (
     shop_name STRING OPTIONS(description="Name of the retail store or antique shop selling the product"),
     latitude FLOAT64 OPTIONS(description="Geographical latitude coordinate of shop location"),
     longitude FLOAT64 OPTIONS(description="Geographical longitude coordinate of shop location"),
@@ -122,7 +121,7 @@ It also sets up the required error logging table for the normalisation process.
 */
 
 -- 1. Dimension Tables
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_shop (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_shop (
     shop_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
     shop_name STRING,
     region STRING,
@@ -131,24 +130,24 @@ CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_shop (
     longitude FLOAT64
 );
 
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_category (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_category (
     category_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
     category STRING
 );
 
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_maker (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_maker (
     maker_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
     makers STRING
 );
 
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_material (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_material (
     material_id INT64 OPTIONS(description="Surrogate Primary Key (Hash)"),
     primary_material STRING
 );
 
 -- STREAMING_CHUNK: Setting up DDL for the normalised target fact table and error logs...
 -- 2. Normalised Target Table (Fact Table: fact_product_scrape representation)
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.fact_product_scrape (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.fact_product_scrape (
     product_id INT64 OPTIONS(description="Primary Key (Hash of URL)"),
     shop_id INT64 OPTIONS(description="Foreign Key to dim_shop"),
     category_id INT64 OPTIONS(description="Foreign Key to dim_category"),
@@ -167,7 +166,7 @@ CREATE OR REPLACE TABLE statement_competitor_data_warehouse.fact_product_scrape 
 CLUSTER BY shop_id, category_id, maker_id;
 
 -- 3. Error Logging Table
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.silver_normalised_error_logs (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_normalised_error_logs (
     log_id STRING OPTIONS(description="Unique log UUID"),
     execution_id STRING,
     batch_id STRING,
@@ -195,16 +194,16 @@ data when an update occurs, an SCD Type 2 table inserts a brand new row for
 every change.
 
 =============================================================================
-WARNING - DATA LOSS RISK:
+NOTE - HISTORY CANNOT BE REBUILT:
 
-Do not run this script in a production environment unless you are actively
-rebuilding the warehouse from scratch, recovering from a total system failure,
-or intentionally resetting the historical data structures.
+dim_price_history accumulates price/availability changes over time and cannot be
+regenerated from Silver. It is created with IF NOT EXISTS so re-running this
+script is safe. Never DROP or CREATE OR REPLACE this table in production.
 =============================================================================
 */
 
 -- STREAMING_CHUNK: Creating the primary dim_price_history table for SCD Type 2 tracking...
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.dim_price_history (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.dim_price_history (
 
     -- ==========================================
     -- Primary and Foreign Keys (From ERD)
@@ -241,7 +240,7 @@ CLUSTER BY product_id, is_current;
 -- =============================================================================
 -- ERROR LOGGING TABLE (Silver Layer Pipeline Trapping)
 -- =============================================================================
-CREATE OR REPLACE TABLE statement_competitor_data_warehouse.silver_historisation_error_logs (
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.silver_historisation_error_logs (
     log_id STRING OPTIONS(description="Unique identifier for the error log entry (UUID)"),
     execution_id STRING OPTIONS(description="Pipeline execution identifier linking to the stored procedure run"),
     batch_id STRING OPTIONS(description="Batch load identifier for grouping errors by execution run"),
