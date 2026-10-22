@@ -1,10 +1,11 @@
 /*
 ===============================================================================
-Script   : 07_sp_reconciled_silver_products.sql
+Script   : 08_sp_reconciled_silver_products.sql
 Layer    : Silver
 Purpose  : Final integrity check before Gold. Each failed check is logged with
            a count and description:
              DATA_DROP_MISMATCH         Bronze URLs in neither Silver nor quarantine
+             SCRAPE_FAILURE             Shop scrapes marked FAILED (or health not checked)
              UNVALIDATED_RECORDS        Silver rows still breaking mandatory rules
              MISSING_FACT_ROW           Silver products without a fact row
              ORPHAN_KEY                 Fact rows pointing to missing dimension members
@@ -13,8 +14,8 @@ Purpose  : Final integrity check before Gold. Each failed check is logged with
              PRICE_HISTORY_OUT_OF_DATE  Current version differs from Silver
              INVALID_HISTORY_INTERVAL   Versions ending before they start
              FINANCIAL_ANOMALY          Average Silver price not above zero
-When     : Deploy at setup and after any change. Runs as step 7 of sp_run_pipeline.
-Requires : Steps 3 to 6 have completed.
+When     : Deploy at setup and after any change. Runs as step 8 of sp_run_pipeline.
+Requires : Steps 3 to 7 have completed.
 Logs     : silver_reconciled_error_logs
 Warning  : Data issues are logged, not raised. The procedure fails only on a
            SQL error. Check the completion log for the summary.
@@ -82,6 +83,22 @@ BEGIN
                 SELECT 1 FROM statement_competitor_data_warehouse.silver_quarantine_bad_records q
                 WHERE JSON_VALUE(q.raw_payload, '$.url') = b.url
             )
+
+        UNION ALL
+
+        -- Shop scrapes in the Bronze batch that failed health checks, or no check run.
+        SELECT
+            'SCRAPE_FAILURE',
+            IF(COUNT(*) = 0, 1, COUNTIF(status = 'FAILED')),
+            IF(
+                COUNT(*) = 0,
+                FORMAT('Bronze batch %s has no scrape health results. Run sp_check_scrape_health.', COALESCE(v_bronze_batch_id, 'NONE')),
+                FORMAT('%d shop scrape(s) in Bronze batch %s failed health checks: %s.',
+                       COUNTIF(status = 'FAILED'), v_bronze_batch_id,
+                       COALESCE(STRING_AGG(IF(status = 'FAILED', FORMAT('%s (%s)', shop_name, issues), NULL), ', '), 'none'))
+            )
+        FROM statement_competitor_data_warehouse.bronze_scrape_health
+        WHERE batch_id = v_bronze_batch_id
 
         UNION ALL
 

@@ -43,7 +43,7 @@ All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. 
 | 4 | `01_DDL/04_create_reference_tables.sql` | `ref_shop_locations`, `ref_shop_rules` |
 | 5 | `01_DDL/05_create_gold_views.sql` | Gold star schema views |
 | 6 | `01_DDL/06_create_gold_lifecycle_views.sql` | Gold lifecycle and reporting views |
-| 7 | `02_Stored_Procedures/01` to `08` | Stored procedures |
+| 7 | `02_Stored_Procedures/01` to `09` | Stored procedures |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
@@ -59,11 +59,12 @@ CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://<bucket>/<file>.c
 |---|---|---|
 | 1 | `sp_load_bronze_products` | Appends the CSV to Bronze as a new batch |
 | 2 | `sp_validate_bronze_products` | Quarantines rows without a URL or parseable price |
-| 3 | `sp_load_silver_products` | Cleans the batch and merges new or changed products into Silver |
-| 4 | `sp_validate_silver_products` | Quarantines rows without a shop name or valid price |
-| 5 | `sp_normalise_silver_products` | Rebuilds dimensions and the fact table |
-| 6 | `sp_load_dim_price_history` | Records price and availability changes (SCD Type 2) |
-| 7 | `sp_reconciled_silver_products` | Runs integrity checks and logs any issues |
+| 3 | `sp_check_scrape_health` | Flags failed or partial shop scrapes (never stops the run) |
+| 4 | `sp_load_silver_products` | Cleans the batch and merges new or changed products into Silver |
+| 5 | `sp_validate_silver_products` | Quarantines rows without a shop name or valid price |
+| 6 | `sp_normalise_silver_products` | Rebuilds dimensions and the fact table |
+| 7 | `sp_load_dim_price_history` | Records price and availability changes (SCD Type 2) |
+| 8 | `sp_reconciled_silver_products` | Runs integrity checks and logs any issues |
 
 Gold objects are views and need no load step. `gold_products_flat` is the Data Studio source.
 
@@ -72,4 +73,8 @@ Gold objects are views and need no load step. `gold_products_flat` is the Data S
 Maintained by hand, no redeploy needed:
 
 - `ref_shop_locations`: verified shop coordinates.
-- `ref_shop_rules`: how each shop signals a sale (zero price, delisting grace period). The `'*'` row is the default.
+- `ref_shop_rules`: how each shop signals a sale (zero price, delisting grace period) and its scrape health thresholds. The `'*'` row is the default.
+
+### Scrape health
+
+`bronze_scrape_health` holds one row per shop per batch: `HEALTHY`, `WARNING` or `FAILED`, with the reasons. Failed scrapes are still loaded, but the Gold views ignore them when deciding whether a product was delisted.

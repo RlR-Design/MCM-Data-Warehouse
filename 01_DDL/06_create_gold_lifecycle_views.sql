@@ -5,6 +5,7 @@ Layer    : Gold
 Purpose  : Works out what happened to each competitor product (listed,
            discounted, sold, delisted, relisted) from the pipeline's raw facts:
              bronze_raw_products  presence in each shop scrape (full snapshots)
+             bronze_scrape_health FAILED scrapes, excluded from delisting
              dim_price_history    price and availability changes
              ref_shop_rules       how each shop signals a sale
            Creates, in dependency order:
@@ -48,14 +49,22 @@ WITH bronze AS (
       AND NULLIF(TRIM(raw_shop_name), '') IS NOT NULL
       AND UPPER(TRIM(raw_shop_name)) NOT IN ('NULL', 'NONE', 'NAN', 'N/A', '-', 'UNKNOWN')
 ),
--- One scrape per shop per Bronze batch
+-- One scrape per shop per Bronze batch. Scrapes marked FAILED by
+-- sp_check_scrape_health are ignored, so they never count as missed.
 shop_batches AS (
     SELECT
         shop_name,
         batch_id,
         COALESCE(MAX(scrape_ts), MIN(ingested_at)) AS scrape_time,
         MIN(ingested_at) AS ingested_at
-    FROM bronze
+    FROM bronze b
+    WHERE NOT EXISTS (
+        SELECT 1
+        FROM statement_competitor_data_warehouse.bronze_scrape_health h
+        WHERE h.batch_id = b.batch_id
+          AND h.shop_name = b.shop_name
+          AND h.status = 'FAILED'
+    )
     GROUP BY shop_name, batch_id
 ),
 -- A batch that repeats an earlier scrape of the same shop (same scrape time)

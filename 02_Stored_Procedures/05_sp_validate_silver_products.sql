@@ -1,13 +1,13 @@
 /*
 ===============================================================================
-Script   : 04_sp_validate_silver_products.sql
+Script   : 05_sp_validate_silver_products.sql
 Layer    : Silver
 Purpose  : Validates only the rows written by one Silver load. Rows that fail
            are copied to silver_quarantine_bad_records and deleted from Silver:
              1. URL, shop name and price present
              2. Price between 0 and 999,999.99
-When     : Deploy at setup and after any change. Runs as step 4 of sp_run_pipeline.
-Requires : 03_sp_load_silver_products has completed.
+When     : Deploy at setup and after any change. Runs as step 5 of sp_run_pipeline.
+Requires : 04_sp_load_silver_products has completed.
 Params   : p_silver_batch_id  Silver load batch (BATCH_SLV_...). NULL = latest completed load.
 Logs     : silver_transformed_error_logs, silver_validity_log
 Warning  : A product whose latest scrape fails validation is removed from Silver,

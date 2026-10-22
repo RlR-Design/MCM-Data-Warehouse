@@ -2,8 +2,9 @@
 ===============================================================================
 Script   : 02_create_bronze_tables.sql
 Layer    : Bronze
-Purpose  : Creates the Bronze landing table and its log and quarantine tables.
-           Bronze stores scraped data exactly as received, all as STRING.
+Purpose  : Creates the Bronze landing table and its log, quarantine and scrape
+           health tables. Bronze stores scraped data exactly as received, all
+           as STRING.
 When     : Initial setup, after 01_create_dataset.sql. Safe to re-run.
 Warning  : Changes to columns here are not applied to existing tables.
            Use ALTER TABLE ... ADD COLUMN IF NOT EXISTS instead.
@@ -75,12 +76,32 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_validity_l
     duration_seconds INT64
 );
 
+-- -----------------------------------------------------------------------------
+-- bronze_scrape_health: one row per shop per batch with the scrape health result.
+-- FAILED scrapes are ignored by the Gold delisting logic.
+-- -----------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.bronze_scrape_health (
+    health_id STRING OPTIONS(description="Unique identifier (UUID)"),
+    execution_id STRING OPTIONS(description="sp_check_scrape_health run identifier"),
+    batch_id STRING OPTIONS(description="Bronze batch checked"),
+    shop_name STRING OPTIONS(description="Shop name as scraped (trimmed)"),
+    checked_at TIMESTAMP OPTIONS(description="When the check ran"),
+    status STRING OPTIONS(description="HEALTHY, WARNING or FAILED"),
+    issues STRING OPTIONS(description="Failed checks, separated by '; '"),
+    product_count INT64 OPTIONS(description="Distinct product URLs in this scrape (NULL if the shop is missing)"),
+    baseline_count INT64 OPTIONS(description="Median product count of the shop's last 3 non-failed scrapes"),
+    quarantine_rate FLOAT64 OPTIONS(description="Share of the shop's rows quarantined by Bronze validation"),
+    duplicate_url_rate FLOAT64 OPTIONS(description="Share of the shop's rows with a repeated URL"),
+    latest_scrape_ts TIMESTAMP OPTIONS(description="Latest scrape timestamp in this scrape"),
+    details STRING OPTIONS(description="Measured values behind the result")
+);
+
 
 /*
 ===============================================================================
 Tests (run manually)
 ===============================================================================
--- All four Bronze tables exist.
+-- All five Bronze tables exist.
 SELECT table_name, creation_time
 FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`
 WHERE table_name LIKE 'bronze_%'

@@ -1,13 +1,13 @@
 /*
 ===============================================================================
-Script   : 06_sp_load_dim_price_history.sql
+Script   : 07_sp_load_dim_price_history.sql
 Layer    : Silver
 Purpose  : Maintains dim_price_history as an SCD Type 2 table: one row per
            price/availability version per product. Changed products get their
            current version expired and a new version inserted, in one
            transaction, with no gaps between versions.
-When     : Deploy at setup and after any change. Runs as step 6 of sp_run_pipeline.
-Requires : 04_sp_validate_silver_products has completed.
+When     : Deploy at setup and after any change. Runs as step 7 of sp_run_pipeline.
+Requires : 05_sp_validate_silver_products has completed.
 Logs     : silver_historisation_error_logs
 Warning  : History cannot be rebuilt. Never truncate or recreate dim_price_history.
 ===============================================================================

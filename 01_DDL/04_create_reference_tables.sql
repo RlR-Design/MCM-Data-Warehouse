@@ -5,7 +5,8 @@ Layer    : Reference
 Purpose  : Creates and seeds the reference tables that hold manually maintained
            shop data:
              ref_shop_locations  verified coordinates (used by the Silver load)
-             ref_shop_rules      how each shop signals a sale (used by Gold)
+             ref_shop_rules      how each shop signals a sale (used by Gold) and
+                                 scrape health thresholds (used by sp_check_scrape_health)
 When     : Initial setup, after 03_create_silver_tables.sql. Safe to re-run.
 Warning  : Seeds only insert missing rows. Edits made in the tables are kept.
 ===============================================================================
@@ -49,16 +50,38 @@ CREATE TABLE IF NOT EXISTS statement_competitor_data_warehouse.ref_shop_rules (
     zero_price_means_sold BOOL OPTIONS(description="TRUE if the shop sets the price to R0.00 when an item has sold"),
     delist_grace_scrapes INT64 OPTIONS(description="Consecutive shop scrapes a product must be missing from before it is treated as delisted"),
     notes STRING OPTIONS(description="Free text describing how this shop behaves"),
-    updated_at TIMESTAMP OPTIONS(description="When this rule was last changed")
+    updated_at TIMESTAMP OPTIONS(description="When this rule was last changed"),
+    min_count_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if product count is below this share of the shop's baseline"),
+    max_quarantine_rate FLOAT64 OPTIONS(description="Scrape health: FAILED if more than this share of the shop's rows is quarantined"),
+    max_duplicate_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if more than this share of the shop's rows repeats a URL"),
+    max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows")
 );
+
+-- Add the scrape health columns to an existing table.
+ALTER TABLE statement_competitor_data_warehouse.ref_shop_rules
+    ADD COLUMN IF NOT EXISTS min_count_ratio FLOAT64 OPTIONS(description="Scrape health: FAILED if product count is below this share of the shop's baseline"),
+    ADD COLUMN IF NOT EXISTS max_quarantine_rate FLOAT64 OPTIONS(description="Scrape health: FAILED if more than this share of the shop's rows is quarantined"),
+    ADD COLUMN IF NOT EXISTS max_duplicate_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if more than this share of the shop's rows repeats a URL"),
+    ADD COLUMN IF NOT EXISTS max_field_empty_rate FLOAT64 OPTIONS(description="Scrape health: WARNING if a normally filled field is empty in more than this share of rows");
 
 -- Seed the default rule if it is missing.
 MERGE statement_competitor_data_warehouse.ref_shop_rules AS target
 USING (SELECT '*' AS shop_name) AS source
 ON target.shop_name = source.shop_name
 WHEN NOT MATCHED THEN
-    INSERT (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at)
-    VALUES ('*', TRUE, 2, 'Default rule for shops without their own row', CURRENT_TIMESTAMP());
+    INSERT (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at,
+            min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate)
+    VALUES ('*', TRUE, 2, 'Default rule for shops without their own row', CURRENT_TIMESTAMP(),
+            0.7, 0.2, 0.05, 0.5);
+
+-- Fill default scrape health thresholds on the '*' row where still empty.
+UPDATE statement_competitor_data_warehouse.ref_shop_rules
+SET
+    min_count_ratio = COALESCE(min_count_ratio, 0.7),
+    max_quarantine_rate = COALESCE(max_quarantine_rate, 0.2),
+    max_duplicate_rate = COALESCE(max_duplicate_rate, 0.05),
+    max_field_empty_rate = COALESCE(max_field_empty_rate, 0.5)
+WHERE shop_name = '*';
 
 
 /*
@@ -70,8 +93,9 @@ SELECT shop_name, latitude, longitude, updated_at
 FROM statement_competitor_data_warehouse.ref_shop_locations
 ORDER BY shop_name;
 
--- Default rule present (expect '*', TRUE, 2).
-SELECT shop_name, zero_price_means_sold, delist_grace_scrapes, notes
+-- Default rule present (expect '*', TRUE, 2, 0.7, 0.2, 0.05, 0.5).
+SELECT shop_name, zero_price_means_sold, delist_grace_scrapes,
+       min_count_ratio, max_quarantine_rate, max_duplicate_rate, max_field_empty_rate, notes
 FROM statement_competitor_data_warehouse.ref_shop_rules
 ORDER BY shop_name;
 
@@ -87,6 +111,12 @@ INSERT INTO statement_competitor_data_warehouse.ref_shop_locations (shop_name, l
 VALUES ('New Shop', -33.9249, 18.4241, CURRENT_TIMESTAMP());
 
 -- Add a shop-specific rule (e.g. R0.00 means "price on request", not sold).
+-- NULL thresholds fall back to the '*' row.
 INSERT INTO statement_competitor_data_warehouse.ref_shop_rules (shop_name, zero_price_means_sold, delist_grace_scrapes, notes, updated_at)
 VALUES ('Example Shop', FALSE, 2, 'Lists POA items at R0.00', CURRENT_TIMESTAMP());
+
+-- Relax the product count threshold for a shop with a volatile catalogue.
+UPDATE statement_competitor_data_warehouse.ref_shop_rules
+SET min_count_ratio = 0.5, updated_at = CURRENT_TIMESTAMP()
+WHERE shop_name = 'Example Shop';
 */

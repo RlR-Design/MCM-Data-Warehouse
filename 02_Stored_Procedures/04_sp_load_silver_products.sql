@@ -1,12 +1,12 @@
 /*
 ===============================================================================
-Script   : 03_sp_load_silver_products.sql
+Script   : 04_sp_load_silver_products.sql
 Layer    : Silver
 Purpose  : Cleans and types one validated Bronze batch and merges it into
            silver_transformed_products. Only new or changed products are
            written. Bronze-quarantined rows are skipped. Missing shop names
            and unparseable prices are left NULL for Silver validation.
-When     : Deploy at setup and after any change. Runs as step 3 of sp_run_pipeline.
+When     : Deploy at setup and after any change. Runs as step 4 of sp_run_pipeline.
 Requires : 02_sp_validate_bronze_products has validated the batch.
            ref_shop_locations (04_create_reference_tables.sql).
 Params   : p_bronze_batch_id  Bronze batch to load. NULL = latest validated batch.

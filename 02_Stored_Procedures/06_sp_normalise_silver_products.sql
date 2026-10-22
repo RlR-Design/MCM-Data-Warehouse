@@ -1,13 +1,13 @@
 /*
 ===============================================================================
-Script   : 05_sp_normalise_silver_products.sql
+Script   : 06_sp_normalise_silver_products.sql
 Layer    : Silver
 Purpose  : Builds the star schema from silver_transformed_products:
            dim_shop, dim_category, dim_maker, dim_material and
            fact_product_scrape. Keys are FARM_FINGERPRINT hashes of the
            normalised value, so spelling variants share one key.
-When     : Deploy at setup and after any change. Runs as step 5 of sp_run_pipeline.
-Requires : 04_sp_validate_silver_products has completed.
+When     : Deploy at setup and after any change. Runs as step 6 of sp_run_pipeline.
+Requires : 05_sp_validate_silver_products has completed.
 Logs     : silver_normalised_error_logs
 Warning  : Dimension rows not referenced by any fact row are deleted on every run.
 ===============================================================================
