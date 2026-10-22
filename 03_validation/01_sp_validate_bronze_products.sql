@@ -181,8 +181,13 @@ BEGIN
 END;
 
 -- STREAMING_CHUNK: Setting up the test environment with dummy data...
+/*
 -- =============================================================================
 -- TESTING BLOCK (Can be executed independently to verify logic)
+--
+-- WARNING: Commented out because it inserts mock rows (batch_id = 'TEST_BATCH_001')
+-- into the production bronze_raw_products table, which then flow into Silver.
+-- Only run manually against a test dataset.
 -- =============================================================================
 
 -- 1. Ensure the base raw table exists so we can insert mock data
@@ -232,3 +237,4 @@ SELECT 'SYSTEM LOGS' as query_type, error_type, error_details, error_timestamp
 FROM statement_competitor_data_warehouse.bronze_raw_error_logs
 WHERE batch_id = 'TEST_BATCH_001'
 ORDER BY error_timestamp DESC;
+*/
