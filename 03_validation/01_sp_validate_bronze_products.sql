@@ -2,9 +2,9 @@
 -- =============================================================================
 -- BRONZE LAYER DATA VALIDATION STORED PROCEDURE
 -- Validates raw data in the statement_competitor_data_warehouse
--- Identifies records failing mandatory checks (Null URLs, Unparseable Prices),
--- Identifies empty records and fills them with NULL values
--- quarantines them, and logs comprehensive pipeline execution metrics.
+-- Identifies records failing mandatory checks (missing URLs, unparseable prices;
+-- empty or whitespace-only URLs count as missing), quarantines them, and logs
+-- comprehensive pipeline execution metrics. Bronze rows themselves are never modified.
 -- =============================================================================
 
 CREATE OR REPLACE PROCEDURE statement_competitor_data_warehouse.sp_validate_bronze_products (IN p_batch_id STRING)
@@ -69,34 +69,12 @@ BEGIN
     DELETE FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
     WHERE batch_id = v_batch_id;
 
-    -- STREAMING_CHUNK: Standardising empty strings and whitespace to NULL values...
-    -- Update block to convert empty strings ('') and spaces-only strings into SQL NULL values
-    -- across all raw fields for the batch being validated.
-    UPDATE statement_competitor_data_warehouse.bronze_raw_products
-    SET
-      raw_shop_name = NULLIF(TRIM(raw_shop_name), ''),
-      raw_latitude = NULLIF(TRIM(raw_latitude), ''),
-      raw_longitude = NULLIF(TRIM(raw_longitude), ''),
-      raw_region = NULLIF(TRIM(raw_region), ''),
-      raw_city = NULLIF(TRIM(raw_city), ''),
-      raw_category = NULLIF(TRIM(raw_category), ''),
-      raw_title = NULLIF(TRIM(raw_title), ''),
-      raw_price = NULLIF(TRIM(raw_price), ''),
-      raw_description = NULLIF(TRIM(raw_description), ''),
-      raw_makers = NULLIF(TRIM(raw_makers), ''),
-      raw_primary_material = NULLIF(TRIM(raw_primary_material), ''),
-      raw_era = NULLIF(TRIM(raw_era), ''),
-      raw_condition = NULLIF(TRIM(raw_condition), ''),
-      raw_dimension = NULLIF(TRIM(raw_dimension), ''),
-      raw_url = NULLIF(TRIM(raw_url), ''),
-      raw_available = NULLIF(TRIM(raw_available), ''),
-      scrape_timestamp = NULLIF(TRIM(scrape_timestamp), '')
-    WHERE batch_id = v_batch_id;
-
     -- STREAMING_CHUNK: Executing mandatory validation rules and quarantining failures...
     -- IDENTIFY AND QUARANTINE BAD RECORDS
+    -- Bronze is kept exactly as received (no in-place cleaning); blanks and
+    -- whitespace are handled here and in sp_load_silver_products instead.
     -- Business Rules:
-    -- 1. raw_url cannot be null (required for unique identification).
+    -- 1. raw_url cannot be null, empty or whitespace (required for unique identification).
     -- 2. raw_price must be parseable as a FLOAT64 after stripping non-numeric characters (except . and -).
     INSERT INTO statement_competitor_data_warehouse.bronze_quarantine_bad_records (
         quarantine_id, execution_id, batch_id, error_reason, quarantine_timestamp, raw_payload
@@ -106,14 +84,14 @@ BEGIN
         v_execution_id,
         v_batch_id,
         CASE
-            WHEN raw_url IS NULL THEN 'URL is null'
+            WHEN NULLIF(TRIM(raw_url), '') IS NULL THEN 'URL is null or empty'
             WHEN SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL THEN 'Price not parseable'
         END AS error_reason,
         CURRENT_TIMESTAMP(),
         TO_JSON_STRING(t)
     FROM statement_competitor_data_warehouse.bronze_raw_products AS t
     WHERE batch_id = v_batch_id
-      AND (raw_url IS NULL OR SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL);
+      AND (NULLIF(TRIM(raw_url), '') IS NULL OR SAFE_CAST(REGEXP_REPLACE(raw_price, r'[^0-9.-]', '') AS FLOAT64) IS NULL);
 
     -- STREAMING_CHUNK: Calculating metrics and inserting validity statistics...
     -- Count the total number of records processed in this batch
