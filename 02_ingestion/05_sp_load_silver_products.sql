@@ -138,24 +138,20 @@ BEGIN
                         ELSE TRIM(raw_condition)
                     END AS condition,
 
-                    /* Latitude - String NULLs mapped to -1.0 */
-                    CASE
-                        WHEN raw_latitude IS NULL OR TRIM(raw_latitude) = '' OR UPPER(TRIM(raw_latitude)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN -1.0
-                        ELSE COALESCE(SAFE_CAST(TRIM(raw_latitude) AS FLOAT64), -1.0)
-                    END AS latitude,
+                    /* Latitude - NULL when missing, unparseable, NaN or outside -90..90.
+                       (NULL rather than -1.0, which is a real coordinate.) */
+                    IF(
+                        SAFE_CAST(TRIM(raw_latitude) AS FLOAT64) BETWEEN -90.0 AND 90.0,
+                        SAFE_CAST(TRIM(raw_latitude) AS FLOAT64),
+                        NULL
+                    ) AS latitude,
 
-                    /* Longitude - String NULLs mapped to -1.0, and validated range */
-                    CASE
-                        WHEN raw_longitude IS NULL OR TRIM(raw_longitude) = '' OR UPPER(TRIM(raw_longitude)) IN ('NULL', 'NONE', 'NAN', 'N/A', '-') THEN -1.0
-                        ELSE COALESCE(
-                            IF(
-                                SAFE_CAST(TRIM(raw_longitude) AS FLOAT64) BETWEEN -180.0 AND 180.0,
-                                SAFE_CAST(TRIM(raw_longitude) AS FLOAT64),
-                                -1.0
-                            ),
-                            -1.0
-                        )
-                    END AS longitude,
+                    /* Longitude - NULL when missing, unparseable, NaN or outside -180..180 */
+                    IF(
+                        SAFE_CAST(TRIM(raw_longitude) AS FLOAT64) BETWEEN -180.0 AND 180.0,
+                        SAFE_CAST(TRIM(raw_longitude) AS FLOAT64),
+                        NULL
+                    ) AS longitude,
 
                     /* Price - Explicitly cleaned and rounded to exactly 2 decimal places.
                        Left NULL if unparseable (not 0.00) so Silver validation quarantines it.
