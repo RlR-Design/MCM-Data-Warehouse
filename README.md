@@ -43,8 +43,9 @@ All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. 
 | 4 | `01_DDL/04_create_reference_tables.sql` | `ref_shop_locations`, `ref_shop_rules` |
 | 5 | `01_DDL/05_create_gold_views.sql` | Gold star schema views |
 | 6 | `01_DDL/06_create_gold_lifecycle_views.sql` | Gold lifecycle and reporting views |
-| 7 | `01_DDL/07_create_monitoring_views.sql` | Scrape monitoring views |
-| 8 | `02_Stored_Procedures/01` to `09` | Stored procedures |
+| 7 | `01_DDL/07_create_gold_market_views.sql` | Gold market insight views |
+| 8 | `01_DDL/08_create_monitoring_views.sql` | Scrape monitoring views |
+| 9 | `02_Stored_Procedures/01` to `09` | Stored procedures |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
@@ -67,7 +68,21 @@ CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://<bucket>/<file>.c
 | 7 | `sp_load_dim_price_history` | Records price and availability changes (SCD Type 2) |
 | 8 | `sp_reconciled_silver_products` | Runs integrity checks and logs any issues |
 
-Gold objects are views and need no load step. `gold_products_flat` is the Data Studio source.
+Gold objects are views and need no load step.
+
+### Gold views for reporting
+
+| View | Grain | Answers |
+|---|---|---|
+| `gold_products_flat` | product | All attributes, current price and status |
+| `gold_sales` | sale | Every sale nationally |
+| `gold_price_baseline` | segment | Price quartiles per category, material, maker, era, condition, region, shop |
+| `gold_value_drivers` | category x attribute | Price premium of materials, makers, eras and conditions |
+| `gold_market_monthly` | month x region x category | New listings, sales and prices over time |
+| `gold_regional_demand` | region | Demand, stock and velocity per province |
+| `gold_shop_scorecard` | shop | Competitor benchmark |
+
+Medians are pre-computed per row: filter them in Data Studio, do not sum or average them.
 
 ### Reference data
 

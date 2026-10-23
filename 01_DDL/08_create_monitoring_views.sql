@@ -1,13 +1,13 @@
 /*
 ===============================================================================
-Script   : 07_create_monitoring_views.sql
+Script   : 08_create_monitoring_views.sql
 Layer    : Monitoring
 Purpose  : Bird's-eye view of scrape runs, combining the scraper's run summary
            with the warehouse's scrape health checks:
              mon_scrape_shop_runs  one row per shop per run
              mon_scrape_runs       one row per run, with an overall status
            Intended for engineers and as the source of a monitoring page.
-When     : Initial setup, after 06_create_gold_lifecycle_views.sql.
+When     : Initial setup, after 07_create_gold_market_views.sql.
            Re-run after any change to this file. Safe to re-run.
 Warning  : Views hold no data. Runs appear after sp_check_scrape_health has run.
 ===============================================================================
