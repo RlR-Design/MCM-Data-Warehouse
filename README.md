@@ -31,7 +31,7 @@ Independent furniture dealers in South Africa frequently set retail prices based
 
 ## **6\. How to Run**
 
-All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. The full operation and maintenance guide is in [03_Documentation/Manual.md](03_Documentation/Manual.md). Each script starts with a header (purpose, when to run, requirements, warnings) and ends with commented-out tests.
+All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. Each script starts with a header (purpose, when to run, requirements, warnings) and ends with commented-out tests.
 
 ### Setup (once, in order)
 

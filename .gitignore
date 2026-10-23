@@ -13,3 +13,6 @@ datasets/*.csv
 
 # Conversation exports (contain unanonymised details)
 /*.txt
+
+# Personal reference manual (local only)
+03_Documentation/Manual.md
