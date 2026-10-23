@@ -10,3 +10,6 @@ __pycache__/
 
 # Local datasets (never committed)
 datasets/*.csv
+
+# Conversation exports (contain unanonymised details)
+/*.txt
