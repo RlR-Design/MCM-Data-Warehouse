@@ -6,7 +6,7 @@ Purpose  : Drops every table, view and procedure in the dataset for a clean
            rebuild. The dataset itself is kept, so its location and access
            settings stay unchanged.
 When     : One-off, before the first full build. Then run 01_DDL/01 to 09 and
-           deploy 02_Stored_Procedures/01 to 09.
+           deploy 02_Stored_Procedures/01 to 10.
 Requires : Nothing.
 Warning  : DESTROYS ALL DATA, INCLUDING BRONZE AND PRICE HISTORY.
            Never run once real history exists.

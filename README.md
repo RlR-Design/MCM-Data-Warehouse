@@ -48,7 +48,7 @@ For a clean rebuild, first run `01_DDL/00_reset_dataset.sql` (commented out by d
 | 7 | `01_DDL/07_create_gold_market_views.sql` | Gold market insight views |
 | 8 | `01_DDL/08_create_monitoring_views.sql` | Scrape monitoring views |
 | 9 | `01_DDL/09_create_automation_tables.sql` | Trigger log for the automation |
-| 10 | `02_Stored_Procedures/01` to `09` | Stored procedures |
+| 10 | `02_Stored_Procedures/01` to `10` | Stored procedures (`10` = `sp_set_shop_rule`, for maintenance) |
 | 11 | `05_Automation/` | Cloud Run function that runs the pipeline on each upload (see its README) |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
@@ -95,7 +95,7 @@ Medians are pre-computed per row: filter them in Data Studio, do not sum or aver
 Maintained by hand, no redeploy needed:
 
 - `ref_shop_locations`: verified shop coordinates.
-- `ref_shop_rules`: how each shop signals a sale (zero price, delisting grace period) and its scrape health thresholds. The `'*'` row is the default.
+- `ref_shop_rules`: how each shop signals a sale (zero price, delisting grace period) and its scrape health thresholds. The `'*'` row is the default; a shop row overrides it per value. Set with `CALL sp_set_shop_rule(...)` (`02_Stored_Procedures/10`).
 
 ### Scrape health
 

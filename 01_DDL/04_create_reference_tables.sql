@@ -76,6 +76,18 @@ WHEN NOT MATCHED THEN
     VALUES ('*', TRUE, 2, 'Default rule for shops without their own row', CURRENT_TIMESTAMP(),
             0.7, 0.2, 0.05, 0.5, 0.9);
 
+-- Seed known shop exceptions that are not in the table yet.
+-- Change them later with sp_set_shop_rule (02_Stored_Procedures/10).
+MERGE statement_competitor_data_warehouse.ref_shop_rules AS target
+USING (
+    SELECT 'Statement Collectables' AS shop_name, 0.3 AS max_quarantine_rate,
+           'Removes the price of sold items; up to 30% rows without a price is normal' AS notes
+) AS source
+ON LOWER(target.shop_name) = LOWER(source.shop_name)
+WHEN NOT MATCHED THEN
+    INSERT (shop_name, max_quarantine_rate, notes, updated_at)
+    VALUES (source.shop_name, source.max_quarantine_rate, source.notes, CURRENT_TIMESTAMP());
+
 -- Fill default scrape health thresholds on the '*' row where still empty.
 UPDATE statement_competitor_data_warehouse.ref_shop_rules
 SET
