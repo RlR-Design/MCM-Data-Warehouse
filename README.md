@@ -47,11 +47,15 @@ For a clean rebuild, first run `01_DDL/00_reset_dataset.sql` (commented out by d
 | 6 | `01_DDL/06_create_gold_lifecycle_views.sql` | Gold lifecycle and reporting views |
 | 7 | `01_DDL/07_create_gold_market_views.sql` | Gold market insight views |
 | 8 | `01_DDL/08_create_monitoring_views.sql` | Scrape monitoring views |
-| 9 | `02_Stored_Procedures/01` to `09` | Stored procedures |
+| 9 | `01_DDL/09_create_automation_tables.sql` | Trigger log for the automation |
+| 10 | `02_Stored_Procedures/01` to `09` | Stored procedures |
+| 11 | `05_Automation/` | Cloud Run function that runs the pipeline on each upload (see its README) |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
 ### Pipeline (per scraped CSV)
+
+Automated: uploading a products CSV to the bucket runs the pipeline (`05_Automation/`). Manual run:
 
 ```sql
 CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://<bucket>/<file>.csv');
