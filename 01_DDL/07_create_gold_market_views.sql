@@ -236,8 +236,8 @@ WITH listings AS (
     FROM statement_competitor_data_warehouse.gold_market_products
     GROUP BY month, region, category
 ),
--- Sales per month (by sold date).
-sales AS (
+-- Sales per month (by sold date). Not named 'sales': that would clash with the column.
+monthly_sales AS (
     SELECT
         sale_month AS month,
         region,
@@ -263,7 +263,7 @@ SELECT
     median_days_on_market,
     ROUND(avg_markdown_pct, 1) AS avg_markdown_pct_before_sale
 FROM listings
-FULL OUTER JOIN sales USING (month, region, category);
+FULL OUTER JOIN monthly_sales USING (month, region, category);
 
 -- -----------------------------------------------------------------------------
 -- gold_regional_demand: demand, stock and velocity per region (all provinces)
