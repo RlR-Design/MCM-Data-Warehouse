@@ -109,8 +109,8 @@ severity>=ERROR
 ### 6. Test
 
 ```bash
-gcloud storage cp datasets/<summary>_run_summary.csv gs://$BUCKET/
-gcloud storage cp datasets/<file>.csv gs://$BUCKET/
+gcloud storage cp 06_Datasets/<summary>_run_summary.csv gs://$BUCKET/
+gcloud storage cp 06_Datasets/<file>.csv gs://$BUCKET/
 gcloud functions logs read statement-pipeline-trigger --region=$REGION --limit=20
 ```
 
