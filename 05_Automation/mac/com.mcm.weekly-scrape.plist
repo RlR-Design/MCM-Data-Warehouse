@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd job: runs run_weekly_scrape.sh every Monday at 06:00 (local time).
+  Weekday: 0 or 7 = Sunday, 1 = Monday ... 6 = Saturday.
+  Install: see 05_Automation/README.md, "Weekly scrape on the Mac".
+  The path below must point to this project's folder.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.mcm.weekly-scrape</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/riaanleroux/DataGripProjects/Statement-Competitor-Pipeline/05_Automation/mac/run_weekly_scrape.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- Output that happens before the script opens its own log. -->
+    <key>StandardOutPath</key>
+    <string>/Users/riaanleroux/DataGripProjects/Statement-Competitor-Pipeline/06_Datasets/logs/launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/riaanleroux/DataGripProjects/Statement-Competitor-Pipeline/06_Datasets/logs/launchd.log</string>
+</dict>
+</plist>

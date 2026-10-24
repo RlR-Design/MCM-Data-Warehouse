@@ -49,13 +49,13 @@ For a clean rebuild, first run `01_DDL/00_reset_dataset.sql` (commented out by d
 | 8 | `01_DDL/08_create_monitoring_views.sql` | Scrape monitoring views |
 | 9 | `01_DDL/09_create_automation_tables.sql` | Trigger log for the automation |
 | 10 | `02_Stored_Procedures/01` to `10` | Stored procedures (`10` = `sp_set_shop_rule`, for maintenance) |
-| 11 | `05_Automation/` | Cloud Run function that runs the pipeline on each upload (see its README) |
+| 11 | `05_Automation/` | Cloud Run function that runs the pipeline on each upload, and the weekly Mac scrape schedule (see its README) |
 
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
 ### Pipeline (per scraped CSV)
 
-Automated: uploading a products CSV to the bucket runs the pipeline (`05_Automation/`). Manual run:
+Automated: the Mac scrapes weekly and uploads to `incoming/` in the bucket; each upload runs the pipeline (`05_Automation/`). Manual run:
 
 ```sql
 CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://<bucket>/<file>.csv');
