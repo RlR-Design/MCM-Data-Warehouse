@@ -35,6 +35,8 @@ All objects live in the BigQuery dataset `statement_competitor_data_warehouse`. 
 
 ### Setup (once, in order)
 
+For a clean rebuild, first run `01_DDL/00_reset_dataset.sql` (commented out by default). It drops every object in the dataset, including Bronze and price history, so use it only before real history exists.
+
 | Step | Script | Creates |
 |---|---|---|
 | 1 | `01_DDL/01_create_dataset.sql` | Dataset |
