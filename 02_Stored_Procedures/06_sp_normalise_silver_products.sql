@@ -40,7 +40,7 @@ BEGIN
     BEGIN
         -- Stage Silver rows with normalised dimension keys (lower case, trimmed,
         -- single spaces), so "Teak", "teak" and "Teak " share one key.
-        CREATE TEMP TABLE stg_normalised AS
+        CREATE OR REPLACE TEMP TABLE stg_normalised AS
         SELECT
             url,
             title,
@@ -64,42 +64,60 @@ BEGIN
             LOWER(REGEXP_REPLACE(TRIM(COALESCE(primary_material, '-1')), r'\s+', ' ')) AS material_key
         FROM statement_competitor_data_warehouse.silver_transformed_products;
 
-        -- Merge dim_shop: most common spelling, known region, city and location per shop.
+        -- Shop attributes: most common spelling, and most common known region, city
+        -- and location per shop. Values are counted first, then the top one is taken.
+        CREATE OR REPLACE TEMP TABLE stg_dim_shop AS
+        WITH names AS (
+            SELECT shop_key, shop_name AS v, COUNT(*) AS n
+            FROM stg_normalised
+            GROUP BY shop_key, shop_name
+        ),
+        regions AS (
+            SELECT shop_key, region AS v, COUNT(*) AS n
+            FROM stg_normalised
+            WHERE region IS NOT NULL AND region != 'Unknown'
+            GROUP BY shop_key, region
+        ),
+        cities AS (
+            SELECT shop_key, city AS v, COUNT(*) AS n
+            FROM stg_normalised
+            WHERE city IS NOT NULL AND city != 'Unknown'
+            GROUP BY shop_key, city
+        ),
+        locations AS (
+            SELECT shop_key, latitude, longitude, COUNT(*) AS n
+            FROM stg_normalised
+            WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            GROUP BY shop_key, latitude, longitude
+        )
+        SELECT
+            FARM_FINGERPRINT(k.shop_key) AS shop_id,
+            nm.shop_name,
+            COALESCE(rg.region, 'Unknown') AS region,
+            COALESCE(ct.city, 'Unknown') AS city,
+            lc.location.latitude AS latitude,
+            lc.location.longitude AS longitude
+        FROM (SELECT DISTINCT shop_key FROM stg_normalised) AS k
+        LEFT JOIN (
+            SELECT shop_key, ARRAY_AGG(v ORDER BY n DESC, v LIMIT 1)[OFFSET(0)] AS shop_name
+            FROM names GROUP BY shop_key
+        ) AS nm ON nm.shop_key = k.shop_key
+        LEFT JOIN (
+            SELECT shop_key, ARRAY_AGG(v ORDER BY n DESC, v LIMIT 1)[OFFSET(0)] AS region
+            FROM regions GROUP BY shop_key
+        ) AS rg ON rg.shop_key = k.shop_key
+        LEFT JOIN (
+            SELECT shop_key, ARRAY_AGG(v ORDER BY n DESC, v LIMIT 1)[OFFSET(0)] AS city
+            FROM cities GROUP BY shop_key
+        ) AS ct ON ct.shop_key = k.shop_key
+        LEFT JOIN (
+            SELECT shop_key, ARRAY_AGG(STRUCT(latitude, longitude) ORDER BY n DESC, latitude, longitude LIMIT 1)[OFFSET(0)] AS location
+            FROM locations GROUP BY shop_key
+        ) AS lc ON lc.shop_key = k.shop_key;
+
+        -- Merge dim_shop.
         MERGE statement_competitor_data_warehouse.dim_shop AS target
-        USING (
-            SELECT
-                shop_id,
-                shop_name,
-                region,
-                city,
-                location.latitude AS latitude,
-                location.longitude AS longitude
-            FROM (
-                SELECT
-                    FARM_FINGERPRINT(shop_key) AS shop_id,
-                    (SELECT v FROM UNNEST(ARRAY_AGG(shop_name)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS shop_name,
-                    COALESCE(
-                        (SELECT v FROM UNNEST(ARRAY_AGG(NULLIF(region, 'Unknown') IGNORE NULLS)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1),
-                        'Unknown'
-                    ) AS region,
-                    COALESCE(
-                        (SELECT v FROM UNNEST(ARRAY_AGG(NULLIF(city, 'Unknown') IGNORE NULLS)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1),
-                        'Unknown'
-                    ) AS city,
-                    (
-                        SELECT AS STRUCT v.latitude, v.longitude
-                        FROM UNNEST(ARRAY_AGG(
-                            IF(latitude IS NOT NULL AND longitude IS NOT NULL, STRUCT(latitude, longitude), NULL)
-                            IGNORE NULLS
-                        )) AS v
-                        GROUP BY v.latitude, v.longitude
-                        ORDER BY COUNT(*) DESC
-                        LIMIT 1
-                    ) AS location
-                FROM stg_normalised
-                GROUP BY shop_key
-            )
-        ) AS source
+        USING stg_dim_shop AS source
         ON target.shop_id = source.shop_id
         WHEN MATCHED AND (
                target.shop_name IS DISTINCT FROM source.shop_name
@@ -123,8 +141,12 @@ BEGIN
         USING (
             SELECT
                 FARM_FINGERPRINT(category_key) AS category_id,
-                (SELECT v FROM UNNEST(ARRAY_AGG(category)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS category
-            FROM stg_normalised
+                ARRAY_AGG(category ORDER BY n DESC, category LIMIT 1)[OFFSET(0)] AS category
+            FROM (
+                SELECT category_key, category, COUNT(*) AS n
+                FROM stg_normalised
+                GROUP BY category_key, category
+            )
             GROUP BY category_key
         ) AS source
         ON target.category_id = source.category_id
@@ -139,8 +161,12 @@ BEGIN
         USING (
             SELECT
                 FARM_FINGERPRINT(maker_key) AS maker_id,
-                (SELECT v FROM UNNEST(ARRAY_AGG(makers)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS makers
-            FROM stg_normalised
+                ARRAY_AGG(makers ORDER BY n DESC, makers LIMIT 1)[OFFSET(0)] AS makers
+            FROM (
+                SELECT maker_key, makers, COUNT(*) AS n
+                FROM stg_normalised
+                GROUP BY maker_key, makers
+            )
             GROUP BY maker_key
         ) AS source
         ON target.maker_id = source.maker_id
@@ -155,8 +181,12 @@ BEGIN
         USING (
             SELECT
                 FARM_FINGERPRINT(material_key) AS material_id,
-                (SELECT v FROM UNNEST(ARRAY_AGG(primary_material)) AS v GROUP BY v ORDER BY COUNT(*) DESC, v LIMIT 1) AS primary_material
-            FROM stg_normalised
+                ARRAY_AGG(primary_material ORDER BY n DESC, primary_material LIMIT 1)[OFFSET(0)] AS primary_material
+            FROM (
+                SELECT material_key, primary_material, COUNT(*) AS n
+                FROM stg_normalised
+                GROUP BY material_key, primary_material
+            )
             GROUP BY material_key
         ) AS source
         ON target.material_id = source.material_id
