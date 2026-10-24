@@ -18,7 +18,7 @@ CREATE SCHEMA IF NOT EXISTS statement_competitor_data_warehouse;
 ===============================================================================
 Tests (run manually)
 ===============================================================================
--- Dataset exists (query fails if it does not, it will return 0 object_count).
+-- Dataset exists: fails if the dataset does not exist; returns 0 while it is empty.
 SELECT COUNT(*) AS object_count
 FROM `statement_competitor_data_warehouse.INFORMATION_SCHEMA.TABLES`;
 */
