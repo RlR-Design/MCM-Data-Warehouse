@@ -29,7 +29,7 @@ Usage:
                 shop.mark_partial("Stopped at page 7 of 13")
         # An exception inside the block marks the shop FAILED and the loop continues.
 
-    summary.write(summary_path_for("MCM_All_products.csv"))
+    summary.write(summary_path_for("MCM_All_products_2026-09-15.csv"))
 """
 
 import csv

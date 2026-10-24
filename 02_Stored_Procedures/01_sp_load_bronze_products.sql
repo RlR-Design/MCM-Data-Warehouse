@@ -8,7 +8,7 @@ Purpose  : Loads a scraped CSV from Cloud Storage and appends it unchanged to
            bronze_scrape_run_summary under the same batch id, if present.
 When     : Deploy at setup and after any change. Runs as step 1 of sp_run_pipeline.
 Requires : 02_create_bronze_tables.sql
-Params   : p_gcs_uri  CSV location. NULL = gs://statement_competitor_data_warehouse/MCM_All_products.csv
+Params   : p_gcs_uri  CSV location (required). Scrape files are dated, so there is no default.
 Logs     : bronze_raw_error_logs
 Warning  : Every CALL appends the whole file. Calling twice with the same file
            loads it twice.
@@ -25,11 +25,16 @@ BEGIN
     DECLARE v_error_msg STRING;
     DECLARE v_error_type STRING;
 
-    -- Initialise run identifiers and resolve the file location.
+    -- Require the file location.
+    IF p_gcs_uri IS NULL OR TRIM(p_gcs_uri) = '' THEN
+        RAISE USING MESSAGE = 'sp_load_bronze_products: p_gcs_uri is required, e.g. gs://statement_competitor_data_warehouse/MCM_All_products_2026-09-15.csv';
+    END IF;
+
+    -- Initialise run identifiers.
     SET start_time = CURRENT_TIMESTAMP();
     SET v_execution_id = GENERATE_UUID();
     SET v_batch_id = FORMAT_TIMESTAMP('BATCH_%Y%m%d_%H%M%S', start_time);
-    SET evaluated_uri = COALESCE(p_gcs_uri, 'gs://statement_competitor_data_warehouse/MCM_All_products.csv');
+    SET evaluated_uri = TRIM(p_gcs_uri);
 
     -- Log start.
     INSERT INTO statement_competitor_data_warehouse.bronze_raw_error_logs (
@@ -237,11 +242,11 @@ END;
 ===============================================================================
 Tests (run manually)
 ===============================================================================
--- Load the default CSV. Appends the whole file as a new batch.
-CALL statement_competitor_data_warehouse.sp_load_bronze_products(NULL);
+-- Load a CSV. Appends the whole file as a new batch.
+CALL statement_competitor_data_warehouse.sp_load_bronze_products('gs://statement_competitor_data_warehouse/MCM_All_products_2026-09-15.csv');
 
--- Load a specific CSV.
-CALL statement_competitor_data_warehouse.sp_load_bronze_products('gs://statement_competitor_data_warehouse/<file>.csv');
+-- Without a file: fails with 'p_gcs_uri is required'.
+CALL statement_competitor_data_warehouse.sp_load_bronze_products(NULL);
 
 -- Rows per batch. Batches with equal counts loaded close together may be duplicate loads.
 SELECT batch_id, MIN(ingested_at) AS loaded_at, COUNT(*) AS row_count, COUNT(DISTINCT raw_url) AS unique_urls

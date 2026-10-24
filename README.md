@@ -108,7 +108,7 @@ Monitoring views:
 
 ### Scrape run summary file
 
-Upload next to the products CSV, in the same folder, named `<name>_run_summary.csv` (e.g. `MCM_All_products.csv` and `MCM_All_products_run_summary.csv`). It is optional; without it, only the warehouse-side checks run. `04_Scraper/scrape_run_summary.py` writes it.
+Upload next to the products CSV, in the same folder, named `<name>_run_summary.csv` (e.g. `MCM_All_products_2026-09-15.csv` and `MCM_All_products_2026-09-15_run_summary.csv`). It is optional; without it, only the warehouse-side checks run. `04_Scraper/scrape_run_summary.py` writes it.
 
 | Column | Example | Meaning |
 |---|---|---|

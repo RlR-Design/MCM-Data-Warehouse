@@ -6,7 +6,7 @@ Purpose  : Runs the full pipeline for one scraped CSV, steps 1 to 8 in order.
            Each step raises on failure, which stops the run at that step.
 When     : Deploy at setup, after scripts 01 to 08. CALL once per new scrape file.
 Requires : All DDL scripts (01_DDL) and procedures 01 to 08 deployed.
-Params   : p_gcs_uri  CSV location. NULL = default file of sp_load_bronze_products.
+Params   : p_gcs_uri  CSV location (required).
 Logs     : Each step writes to its own log table.
 Warning  : Step 1 appends the whole file to Bronze. Do not run twice for the same file.
 ===============================================================================
@@ -44,11 +44,8 @@ END;
 ===============================================================================
 Tests (run manually)
 ===============================================================================
--- Run the full pipeline for the default CSV.
-CALL statement_competitor_data_warehouse.sp_run_pipeline(NULL);
-
--- Run the full pipeline for a specific CSV.
-CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://statement_competitor_data_warehouse/<file>.csv');
+-- Run the full pipeline for one CSV.
+CALL statement_competitor_data_warehouse.sp_run_pipeline('gs://statement_competitor_data_warehouse/MCM_All_products_2026-09-15.csv');
 
 -- Latest event from every step's log (expect INFO_STAGE_COMPLETE for each).
 SELECT 'bronze' AS log, scraper_job_id AS step, error_type, error_details, error_timestamp
