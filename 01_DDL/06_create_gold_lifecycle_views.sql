@@ -265,6 +265,7 @@ WHERE event_type IS NOT NULL;
 --   ACTIVE_DISCOUNTED  listed, below the first listed price
 --   PENDING_DELIST     missing from recent scrapes, within the grace period
 --   SOLD               delisted, marked sold or zero-priced (see sold_reason)
+--   QUARANTINED        scraped, but never passed validation (see quarantine_reason)
 -- sold_price is the last non-zero price, so R0.00 never skews averages.
 -- -----------------------------------------------------------------------------
 CREATE OR REPLACE VIEW statement_competitor_data_warehouse.gold_product_status
@@ -296,6 +297,19 @@ history_summary AS (
     FROM statement_competitor_data_warehouse.dim_price_history
     GROUP BY product_id
 ),
+-- Latest quarantine reason per URL (Bronze and Silver validation)
+quarantine_summary AS (
+    SELECT url, ARRAY_AGG(error_reason ORDER BY quarantine_timestamp DESC LIMIT 1)[OFFSET(0)] AS quarantine_reason
+    FROM (
+        SELECT TRIM(JSON_VALUE(raw_payload, '$.raw_url')) AS url, error_reason, quarantine_timestamp
+        FROM statement_competitor_data_warehouse.bronze_quarantine_bad_records
+        UNION ALL
+        SELECT TRIM(JSON_VALUE(raw_payload, '$.url')), error_reason, quarantine_timestamp
+        FROM statement_competitor_data_warehouse.silver_quarantine_bad_records
+    )
+    WHERE url IS NOT NULL
+    GROUP BY url
+),
 -- Markdown count and latest sold signal per product
 event_summary AS (
     SELECT
@@ -323,9 +337,13 @@ combined AS (
         h.first_listed_price,
         h.last_listed_price,
         COALESCE(e.markdown_count, 0) AS markdown_count,
-        e.last_sold_signal_at
+        e.last_sold_signal_at,
+        -- No price history: the product never passed validation.
+        h.product_id IS NULL AS is_quarantined,
+        q.quarantine_reason
     FROM presence_summary p
-    JOIN history_summary h ON h.product_id = p.product_id
+    LEFT JOIN history_summary h ON h.product_id = p.product_id
+    LEFT JOIN quarantine_summary q ON q.url = p.url
     LEFT JOIN event_summary e ON e.product_id = p.product_id
     LEFT JOIN statement_competitor_data_warehouse.ref_shop_rules sr ON LOWER(sr.shop_name) = LOWER(p.shop_name)
     LEFT JOIN statement_competitor_data_warehouse.ref_shop_rules dr ON dr.shop_name = '*'
@@ -333,11 +351,11 @@ combined AS (
         ON first_missed.product_id = p.product_id
        AND first_missed.scrape_seq = p.last_present_seq + 1
 ),
--- Sold signals as flags
+-- Sold signals as flags (none for quarantined products: no valid price to sell at)
 classified AS (
     SELECT
         *,
-        scrapes_missed >= grace AS is_delisted,
+        NOT is_quarantined AND scrapes_missed >= grace AS is_delisted,
         current_available IS FALSE AS is_marked_sold,
         COALESCE(current_price = 0 AND zero_price_means_sold, FALSE) AS is_zero_priced
     FROM combined
@@ -359,6 +377,7 @@ SELECT
     url,
     shop_name,
     CASE
+        WHEN is_quarantined THEN 'QUARANTINED'
         WHEN is_sold THEN 'SOLD'
         WHEN scrapes_missed > 0 THEN 'PENDING_DELIST'
         WHEN last_listed_price < first_listed_price THEN 'ACTIVE_DISCOUNTED'
@@ -387,7 +406,8 @@ SELECT
     first_seen_at,
     last_seen_at,
     scrapes_missed,
-    grace AS delist_grace_scrapes
+    grace AS delist_grace_scrapes,
+    IF(is_quarantined, quarantine_reason, NULL) AS quarantine_reason
 FROM with_sold_at;
 
 
@@ -457,6 +477,13 @@ SELECT shop_name, status, COUNT(*) AS products, ROUND(AVG(sold_price), 2) AS avg
 FROM statement_competitor_data_warehouse.gold_product_status
 GROUP BY shop_name, status
 ORDER BY shop_name, status;
+
+-- Quarantined products and why (scraped, never passed validation).
+SELECT shop_name, quarantine_reason, COUNT(*) AS products
+FROM statement_competitor_data_warehouse.gold_product_status
+WHERE status = 'QUARANTINED'
+GROUP BY shop_name, quarantine_reason
+ORDER BY products DESC;
 
 -- Event counts per type and shop. Many SCRAPE_GAP events suggest scraper issues.
 SELECT shop_name, event_type, COUNT(*) AS events

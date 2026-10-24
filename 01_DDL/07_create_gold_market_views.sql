@@ -328,10 +328,10 @@ WHERE table_name IN ('gold_market_products', 'gold_sales', 'gold_price_baseline'
                      'gold_market_monthly', 'gold_regional_demand', 'gold_shop_scorecard')
 ORDER BY table_name;
 
--- Base view covers every product with a status (expect equal counts).
+-- Base view covers every validated product (expect equal counts; QUARANTINED products are excluded).
 SELECT
     (SELECT COUNT(*) FROM statement_competitor_data_warehouse.gold_market_products) AS market_products,
-    (SELECT COUNT(*) FROM statement_competitor_data_warehouse.gold_product_status) AS status_products;
+    (SELECT COUNTIF(status != 'QUARANTINED') FROM statement_competitor_data_warehouse.gold_product_status) AS status_products;
 
 -- Sales reconcile across views (expect three equal counts).
 SELECT
