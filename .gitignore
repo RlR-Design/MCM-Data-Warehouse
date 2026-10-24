@@ -16,3 +16,7 @@ datasets/*.csv
 
 # Personal reference manual (local only)
 03_Documentation/Manual.md
+
+# Scrapers (local until anonymised); only the run summary helper is committed
+04_Scraper/*
+!04_Scraper/scrape_run_summary.py
