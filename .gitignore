@@ -20,3 +20,6 @@ __pycache__/
 # Scrapers (local until anonymised); only the run summary helper is committed
 04_Scraper/*
 !04_Scraper/scrape_run_summary.py
+
+# Local debugging scratch (never committed)
+08_Debugging/

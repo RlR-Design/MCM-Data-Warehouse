@@ -51,6 +51,8 @@ For a clean rebuild, first run `01_DDL/00_reset_dataset.sql` (commented out by d
 | 10 | `02_Stored_Procedures/01` to `10` | Stored procedures (`10` = `sp_set_shop_rule`, for maintenance) |
 | 11 | `05_Automation/` | Cloud Run function that runs the pipeline on each upload, and the weekly Mac scrape schedule (see its README) |
 
+Checks for setup and after every run, with expected results: `07_Tests/pipeline_tests.sql`.
+
 DDL scripts are safe to re-run: they never drop or overwrite data. Re-deploy a procedure script after changing it.
 
 ### Pipeline (per scraped CSV)
